@@ -1,0 +1,4 @@
+```
+cargo install
+cargo run
+```
