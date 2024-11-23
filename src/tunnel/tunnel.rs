@@ -47,7 +47,7 @@ impl Tunnel {
         }
         let mut client = client.unwrap();
 
-        let res = client.binding_request("stun.ekiga.net:3478", None).await;
+        let res = client.binding_request("stun.l.google.com:19302", None).await;
         if let Err(e) = res {
             panic!("Failed to send binding request: {:?}", e);
         }

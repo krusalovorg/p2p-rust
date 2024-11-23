@@ -1,3 +1,3 @@
 mod signal;
 
-pub use self::signal::{SignalServer, TransportPacket};
+pub use self::signal::{SignalServer, TransportPacket, Protocol};
