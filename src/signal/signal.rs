@@ -3,11 +3,11 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 #[derive(Debug)]
 struct Peer {
-    socket: Arc<Mutex<TcpStream>>,
+    socket: Arc<RwLock<TcpStream>>,
     info: String,
 }
 
@@ -17,19 +17,32 @@ type PeersReceiver = mpsc::Receiver<Peer>;
 pub struct SignalServer {
     peers_sender: PeersSender,
     peers_receiver: Arc<Mutex<PeersReceiver>>,
-    socket: Option<Arc<Mutex<TcpStream>>>,
+    socket: Option<Arc<RwLock<TcpStream>>>,
     port: i64,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
+pub enum Protocol {
+    TURN,
+    STUN,
+    SIGNAL,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+pub enum Status {
+    ERROR,
+    SUCCESS,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct TransportPacket {
     pub public_addr: String,
-    pub act: String,
+    pub act: String, //info, answer, wait_connection,
     pub to: Option<String>,
     pub data: Option<serde_json::Value>,
     pub session_key: Option<String>,
-    pub status: Option<String>,   // success, falied
-    pub protocol: Option<String>, // TURN, STUN
+    pub status: Option<Status>, // success, falied
+    pub protocol: Protocol,     // TURN, STUN, SIGNAL
 }
 
 impl SignalServer {
@@ -75,7 +88,7 @@ impl SignalServer {
         );
         match TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port)).await {
             Ok(socket) => {
-                let socket = Arc::new(Mutex::new(socket));
+                let socket = Arc::new(RwLock::new(socket));
                 self.socket = Some(socket);
                 let connect_packet = TransportPacket {
                     public_addr: format!("{}:{}", public_ip, public_port),
@@ -84,12 +97,12 @@ impl SignalServer {
                     data: None,
                     session_key: None,
                     status: None,
-                    protocol: Some("TURN".to_string()),
+                    protocol: Protocol::SIGNAL,
                 };
                 let connect_packet = serde_json::to_string(&connect_packet).unwrap();
                 if let Some(socket) = &self.socket {
                     socket
-                        .lock()
+                        .write()
                         .await
                         .write_all(connect_packet.as_bytes())
                         .await
@@ -109,20 +122,34 @@ impl SignalServer {
     }
 
     async fn handle_connection(&self, socket: TcpStream, peers_sender: PeersSender) {
-        let peer_socket = Arc::new(Mutex::new(socket));
+        let peer_socket = Arc::new(RwLock::new(socket));
         let mut buf = [0; 1024];
         loop {
-            let n = peer_socket.lock().await.read(&mut buf).await.unwrap();
+            let mut peer_socket_read = peer_socket.write().await;
+            let read_result = peer_socket_read.read(&mut buf).await;
+            let n = match read_result {
+                Ok(0) => {
+                    println!("Connection closed by peer");
+                    break;
+                }
+                Ok(n) => n,
+                Err(e) => {
+                    println!("Failed to read from socket: {}", e);
+                    break;
+                }
+            };
+
             let message = String::from_utf8_lossy(&buf[..n]).to_string();
             println!("Received peer info: {:?}", message);
             let message: TransportPacket = serde_json::from_str(&message).unwrap();
             let peer_info = &message.public_addr;
-            println!("Peer info: {}", peer_info);
+            println!("Peer message info: {:?}", message);
 
             let is_peer_wait_connection = message.act == "wait_connection";
+            let is_peer_wait_stun_connection = message.protocol == Protocol::STUN;
             let mut peers: Vec<Peer> = Vec::new();
 
-            if is_peer_wait_connection {
+            if is_peer_wait_connection && is_peer_wait_stun_connection {
                 let peer = Peer {
                     socket: peer_socket.clone(),
                     info: peer_info.to_string(),
@@ -137,12 +164,12 @@ impl SignalServer {
                     data: None,
                     session_key: None,
                     status: None,
-                    protocol: Some("TURN".to_string()),
+                    protocol: Protocol::STUN,
                 };
                 println!("Sending answer packet");
                 let answer_packet = serde_json::to_string(&answer_packet).unwrap();
                 peer_socket
-                    .lock()
+                    .write()
                     .await
                     .write_all(answer_packet.as_bytes())
                     .await
@@ -157,7 +184,7 @@ impl SignalServer {
                 }
             }
 
-            if peers.len() == 2 {
+            if is_peer_wait_connection && peers.len() == 2 {
                 println!("Both peers are ready to connect");
                 let peer1_info = peers[0].info.clone();
                 let peer1_socket = peers[0].socket.clone();
@@ -170,15 +197,15 @@ impl SignalServer {
                     let wait_packet = TransportPacket {
                         public_addr: peer2_info.clone(),
                         act: "wait_connection".to_string(),
-                        to: None,
+                        to: Some(peer1_info.clone()),
                         data: None,
                         session_key: None,
                         status: None,
-                        protocol: Some("TURN".to_string()),
+                        protocol: Protocol::STUN,
                     };
                     let wait_packet = serde_json::to_string(&wait_packet).unwrap();
                     println!("lock peer1_socket");
-                    let mut peer1_socket = peer1_socket.lock().await;
+                    let mut peer1_socket = peer1_socket.write().await;
                     println!("Sending peer2 info to peer1: {}", wait_packet);
                     if let Err(e) = peer1_socket.write_all(wait_packet.as_bytes()).await {
                         println!("Failed to send peer2 info to peer1: {}", e);
@@ -192,14 +219,14 @@ impl SignalServer {
                     let wait_packet = TransportPacket {
                         public_addr: peer1_info.clone(),
                         act: "wait_connection".to_string(),
-                        to: None,
+                        to: Some(peer2_info).clone(),
                         data: None,
                         session_key: None,
                         status: None,
-                        protocol: Some("TURN".to_string()),
+                        protocol: Protocol::STUN,
                     };
                     let wait_packet = serde_json::to_string(&wait_packet).unwrap();
-                    let mut peer2_socket = peer2_socket.lock().await;
+                    let mut peer2_socket = peer2_socket.write().await;
                     println!("Sending peer1 info to peer2: {}", wait_packet);
                     if let Err(e) = peer2_socket.write_all(wait_packet.as_bytes()).await {
                         println!("Failed to send peer1 info to peer2: {}", e);
@@ -211,6 +238,37 @@ impl SignalServer {
         }
     }
 
+    // для пира
+    pub async fn send_turn_message(&self, packet: TransportPacket) -> Result<(), String> {
+        println!("[send_turn_message] Packet: {:?}", packet);
+        let string_packet = serde_json::to_string(&packet).unwrap();
+
+        if self.socket.is_none() {
+            return Err("Socket is not connected".to_string());
+        }
+
+        if let Some(socket) = &self.socket {
+            println!("Sending turn data to signal server: {}", string_packet);
+
+            let result = socket
+                .clone()
+                .write_owned()
+                .await
+                .write_all(string_packet.as_bytes())
+                .await;
+            println!("Sended");
+
+            match result {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        return Err("Socket error".to_string());
+    }
+
+    // для пира
     pub async fn send_peer_info_request(
         &self,
         public_ip: &str,
@@ -223,7 +281,7 @@ impl SignalServer {
             data: None,
             session_key: None,
             status: None,
-            protocol: Some("TURN".to_string()),
+            protocol: Protocol::STUN,
         };
         let connect_packet = serde_json::to_string(&connect_packet).unwrap();
 
@@ -238,7 +296,7 @@ impl SignalServer {
             );
 
             let result = socket
-                .lock()
+                .write()
                 .await
                 .write_all(connect_packet.as_bytes())
                 .await;
@@ -258,6 +316,7 @@ impl SignalServer {
         }
     }
 
+    //Со стороны юзера получение сообщений от сигнального сервера
     pub async fn receive_message(&self) -> Result<TransportPacket, String> {
         if self.socket.is_none() {
             return Err("Socket is not connected".to_string());
@@ -265,7 +324,7 @@ impl SignalServer {
         if let Some(socket) = &self.socket {
             let mut buf: [u8; 1024] = [0; 1024];
             let n = socket
-                .lock()
+                .write()
                 .await
                 .read(&mut buf)
                 .await
