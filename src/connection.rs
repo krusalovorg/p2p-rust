@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task;
 use tokio::time::sleep;
 
-use crate::signal::{SignalServer, TransportPacket};
+use crate::signal::{SignalClient, TransportPacket};
 
 #[derive(Debug)]
 pub enum Message {
@@ -12,7 +12,6 @@ pub enum Message {
     GetResponse {
         tx: oneshot::Sender<TransportPacket>,
     },
-    Response(TransportPacket),
 }
 
 pub struct Connection {
@@ -55,7 +54,7 @@ impl Connection {
             signal_server_ip, signal_server_port
         );
 
-        let mut signal_server = SignalServer::new();
+        let mut signal_server = SignalClient::new();
         if let Err(e) = signal_server
             .connect(
                 &signal_server_ip,
@@ -75,21 +74,7 @@ impl Connection {
             .send_peer_info_request(&tunnel_public_ip, tunnel_public_port)
             .await
         {
-            Ok(_) => {
-                println!("Packet success sended");
-            }
-            Err(e) => {
-                println!("Failed to send peer info request: {}", e);
-            }
-        }
-
-        match signal_server
-            .send_peer_info_request(&tunnel_public_ip, tunnel_public_port)
-            .await
-        {
-            Ok(_) => {
-                println!("Packet success sended");
-            }
+            Ok(_) => (),
             Err(e) => {
                 println!("Failed to send peer info request: {}", e);
             }
@@ -103,9 +88,6 @@ impl Connection {
                 Message::GetResponse { tx } => {
                     let response = signal_server.receive_message().await.unwrap();
                     tx.send(response);
-                }
-                Message::Response(response) => {
-                    println!("Received response: {:?}", response);
                 }
             }
         }

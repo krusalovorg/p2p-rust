@@ -1,3 +1,7 @@
-mod signal;
+mod client;
+mod server;
+mod types;
 
-pub use self::signal::{SignalServer, TransportPacket, Protocol};
+pub use self::client::SignalClient;
+pub use self::server::SignalServer;
+pub use self::types::{Protocol, TransportPacket};

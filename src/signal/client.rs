@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::signal::{Protocol, TransportPacket};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -14,44 +15,20 @@ struct Peer {
 type PeersSender = mpsc::Sender<Peer>;
 type PeersReceiver = mpsc::Receiver<Peer>;
 
-pub struct SignalServer {
+pub struct SignalClient {
     peers_sender: PeersSender,
     peers_receiver: Arc<Mutex<PeersReceiver>>,
     socket: Option<Arc<RwLock<TcpStream>>>,
     port: i64,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
-pub enum Protocol {
-    TURN,
-    STUN,
-    SIGNAL,
-}
-
-#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
-pub enum Status {
-    ERROR,
-    SUCCESS,
-}
-
-#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
-pub struct TransportPacket {
-    pub public_addr: String,
-    pub act: String, //info, answer, wait_connection,
-    pub to: Option<String>,
-    pub data: Option<serde_json::Value>,
-    pub session_key: Option<String>,
-    pub status: Option<Status>, // success, falied
-    pub protocol: Protocol,     // TURN, STUN, SIGNAL
-}
-
-impl SignalServer {
+impl SignalClient {
     pub fn new() -> Self {
         let (peers_sender, peers_receiver) = mpsc::channel(100);
         let config: Config = Config::from_file("config.toml");
         let signal_server_port = config.signal_server_port;
 
-        SignalServer {
+        SignalClient {
             peers_sender,
             peers_receiver: Arc::new(Mutex::new(peers_receiver)),
             socket: None,
@@ -110,7 +87,6 @@ impl SignalServer {
                             println!("Failed to send connect packet: {}", e);
                             e.to_string()
                         })?;
-                    println!("Sent public address to signal server: {}", connect_packet);
                 }
                 Ok(())
             }
@@ -143,7 +119,6 @@ impl SignalServer {
             println!("Received peer info: {:?}", message);
             let message: TransportPacket = serde_json::from_str(&message).unwrap();
             let peer_info = &message.public_addr;
-            println!("Peer message info: {:?}", message);
 
             let is_peer_wait_connection = message.act == "wait_connection";
             let is_peer_wait_stun_connection = message.protocol == Protocol::STUN;

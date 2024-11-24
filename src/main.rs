@@ -1,16 +1,12 @@
 use anyhow::Result;
 // use async_std::path::Path;
-use async_std::task::sleep;
-use signal::Protocol;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use std::{
     env,
     //  fs, result
 };
-use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio::task;
+use tokio::sync::Mutex;
 
 mod config;
 // mod db;
@@ -21,7 +17,7 @@ mod tunnel;
 use crate::config::Config;
 use crate::connection::Connection;
 // use crate::db::{Fragment, P2PDatabase, Storage};
-use crate::signal::{SignalServer, TransportPacket};
+use crate::signal::{SignalServer, TransportPacket, Protocol, SignalClient};
 use crate::tunnel::Tunnel;
 
 #[tokio::main]
@@ -107,7 +103,6 @@ async fn run_peer() {
     let mut connections_turn: HashMap<String, ConnectionTurnStatus> = HashMap::new();
     loop {
         let result = connection.get_response().await;
-        println!("Received: {:?}", result);
         match result {
             Ok(packet) => {
                 println!("Received packet: {:?}", packet);
@@ -116,7 +111,6 @@ async fn run_peer() {
                     let public_addr = packet.public_addr.clone();
                     let packet_clone = packet.clone();
                     let protocol_connection = packet.protocol.clone();
-                    println!("Protocol connection: {:?}", protocol_connection);
                     if protocol_connection == Protocol::STUN {
                         println!("Start stun tunnel");
                         let result_tunnel = stun_tunnel(packet, Arc::clone(&tunnel)).await;
@@ -145,20 +139,7 @@ async fn run_peer() {
                         );
                     }
                     if let Some(status) = connections_turn.get_mut(&public_addr) {
-                        println!("Status connection turn: {:?}", status);
                         if status.turn_connection && !status.connected {
-                            let packet_hello = TransportPacket {
-                                public_addr: "192.168.0.21:8080".to_string(),
-                                act: "accept_connection".to_string(),
-                                to: Some("192.168.0.21:8080".to_string()),
-                                data: None,
-                                session_key: None,
-                                status: None,
-                                protocol: Protocol::TURN,
-                            };
-                            let resultt: std::result::Result<(), String> =
-                                connection.send_packet(packet_hello).await;
-
                             let result_turn_tunnel =
                                 turn_tunnel(packet_clone, Arc::clone(&tunnel), &connection).await;
                             println!("Result turn tunnel {:?}", result_turn_tunnel);
@@ -250,7 +231,7 @@ async fn stun_tunnel(packet: TransportPacket, tunnel: Arc<Mutex<Tunnel>>) -> Res
         "Entering stun_tunnel with public address: {:?}",
         packet.public_addr
     );
-    match SignalServer::extract_addr(packet.public_addr).await {
+    match SignalClient::extract_addr(packet.public_addr).await {
         Ok((ip, port)) => {
             println!("Extracted address: {}:{}", ip, port);
             let ip = ip.to_string();
