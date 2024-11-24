@@ -238,9 +238,8 @@ impl SignalServer {
         }
     }
 
-    // для пира
-    pub async fn send_turn_message(&self, packet: TransportPacket) -> Result<(), String> {
-        println!("[send_turn_message] Packet: {:?}", packet);
+    pub async fn send_packet(&self, packet: TransportPacket) -> Result<(), String> {
+        println!("[send_packet] Packet: {:?}", packet);
         let string_packet = serde_json::to_string(&packet).unwrap();
 
         if self.socket.is_none() {
