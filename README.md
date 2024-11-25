@@ -1,4 +1,0 @@
-```
-cargo install
-cargo run
-```
