@@ -110,3 +110,37 @@ impl P2PDatabase {
         key.bytes().fold(0, |acc, b| acc.wrapping_add(b as i32))
     }
 }
+
+    // let db_path = Path::new("./storage/db"); //TempDir::new("storage").unwrap();
+    // // let path = tempdir.path();
+
+    // if !db_path.exists().await {
+    //     fs::create_dir_all(db_path).expect("Failed to create database directory");
+    // }
+
+    // let db = P2PDatabase::new(db_path.as_ref());
+
+    // let fragment = Fragment {
+    //     uuid_peer: "peer1".to_string(),
+    //     session_key: "key1".to_string(),
+    //     session: "session1".to_string(),
+    //     fragment: "fragment1".to_string(),
+    // };
+
+    // db.add_myfile_fragment("file1", fragment.clone());
+    // db.add_myfile_fragment("file1", fragment.clone());
+
+    // let storage = Storage {
+    //     session: "session1".to_string(),
+    //     session_key: "key1".to_string(),
+    //     uuid_peer: "peer1".to_string(),
+    //     fragment: "fragment1".to_string(),
+    // };
+
+    // db.add_storage_fragment(storage);
+
+    // let myfile_fragments = db.get_myfile_fragments("file1");
+    // println!("{:?}", myfile_fragments);
+
+    // let storage_fragments = db.get_storage_fragments();
+    // println!("{:?}", storage_fragments);

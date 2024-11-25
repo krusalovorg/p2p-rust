@@ -22,40 +22,6 @@ use crate::tunnel::Tunnel;
 
 #[tokio::main]
 async fn main() {
-    // let db_path = Path::new("./storage/db"); //TempDir::new("storage").unwrap();
-    // // let path = tempdir.path();
-
-    // if !db_path.exists().await {
-    //     fs::create_dir_all(db_path).expect("Failed to create database directory");
-    // }
-
-    // let db = P2PDatabase::new(db_path.as_ref());
-
-    // let fragment = Fragment {
-    //     uuid_peer: "peer1".to_string(),
-    //     session_key: "key1".to_string(),
-    //     session: "session1".to_string(),
-    //     fragment: "fragment1".to_string(),
-    // };
-
-    // db.add_myfile_fragment("file1", fragment.clone());
-    // db.add_myfile_fragment("file1", fragment.clone());
-
-    // let storage = Storage {
-    //     session: "session1".to_string(),
-    //     session_key: "key1".to_string(),
-    //     uuid_peer: "peer1".to_string(),
-    //     fragment: "fragment1".to_string(),
-    // };
-
-    // db.add_storage_fragment(storage);
-
-    // let myfile_fragments = db.get_myfile_fragments("file1");
-    // println!("{:?}", myfile_fragments);
-
-    // let storage_fragments = db.get_storage_fragments();
-    // println!("{:?}", storage_fragments);
-
     let args: Vec<String> = env::args().collect();
     if args.contains(&"--signal".to_string()) {
         let signal_server = Arc::new(SignalServer::new());
@@ -99,8 +65,8 @@ async fn run_peer() {
     )
     .await;
 
-    // let processing = task::spawn(async move {
     let mut connections_turn: HashMap<String, ConnectionTurnStatus> = HashMap::new();
+
     loop {
         let result = connection.get_response().await;
         match result {
@@ -169,7 +135,6 @@ async fn run_peer() {
             Err(e) => eprintln!("Failed to get peer info: {}", e),
         }
     }
-    // });
 }
 
 async fn turn_tunnel(
@@ -269,41 +234,3 @@ async fn stun_tunnel(packet: TransportPacket, tunnel: Arc<Mutex<Tunnel>>) -> Res
         }
     }
 }
-
-// use std::{str};
-
-// mod tunnel;
-// use crate::tunnel::Tunnel;
-
-// #[tokio::main]
-// async fn main() {
-//     let mut tunnel = Tunnel::new().await;
-//     println!(
-//         "Send this to your friend {}:{}",
-//         tunnel.public_ip, tunnel.public_port
-//     );
-//     //try connecting to your friend
-//     println!("Enter your friend's IP:Port");
-//     let mut input = String::new();
-//     std::io::stdin().read_line(&mut input).unwrap();
-//     println!("Connecting to {}", input.trim());
-//     let parts: Vec<&str> = input.trim().split(':').collect();
-//     let ip = parts[0];
-//     let port: u16 = parts[1].parse().unwrap();
-//     tunnel.make_connection(ip, port, 10).await;
-//     println!("Connection established with {}:{}!", ip, port);
-//     tunnel.backlife_cycle(1);
-
-//     loop {
-//         let mut input = String::new();
-//         std::io::stdin().read_line(&mut input).unwrap();
-//         let trimmed_input = input.trim();
-
-//         if trimmed_input.starts_with("file ") {
-//             let file_path = trimmed_input.strip_prefix("file ").unwrap();
-//             tunnel.send_file_path(file_path).await;
-//         } else {
-//             tunnel.send_message(trimmed_input).await;
-//         }
-//     }
-// }
