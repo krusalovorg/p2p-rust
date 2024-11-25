@@ -1,5 +1,4 @@
 # P2P - NEW P2P DATABASE
-=====================================
 
 ## Обзор
 ------------
@@ -34,8 +33,8 @@
 2. Докер контейнер:
 1. `docker build -t my-p2p-server .`
 2. Откройте файл `config.toml` и настройте необходимые параметры
-signal_server_ip = "0.0.0.0"
-signal_server_port = 3031
+`signal_server_ip = "0.0.0.0"`
+`signal_server_port = 3031`
 3. `docker run my-p2p-server`
 
 Готово! Ваш сигнальный сервер выведет лог:
