@@ -1,17 +1,11 @@
-use crate::config::Config;
-use crate::signal::{Protocol, TransportPacket};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-#[derive(Debug)]
-struct Peer {
-    socket: Arc<Mutex<TcpStream>>,
-    info: String,
-    wait_connection: Mutex<bool>,
-}
+use super::Peer;
+use crate::config::Config;
+use crate::signal::{Protocol, TransportPacket};
 
 pub struct SignalServer {
     pub peers: Mutex<Vec<Arc<Peer>>>,
@@ -32,74 +26,45 @@ impl SignalServer {
         let listener = TcpListener::bind(addr.clone()).await.unwrap();
         println!("Signal server running on {}", addr);
 
-        let signal_server_clone = Arc::clone(&self);
-        tokio::spawn(async move {
-            signal_server_clone.wait_for_peers().await;
-        });
+        // let signal_server_clone = Arc::clone(&self);
+        // tokio::spawn(async move {
+        //     signal_server_clone.wait_for_peers().await;
+        // });
 
         loop {
             let (socket, _) = listener.accept().await.unwrap();
             println!("New connection: {}", socket.peer_addr().unwrap());
-            let signal_server_clone = Arc::clone(&self);
+
+            let peer = Peer::new(socket, None);
+
+            let server_clone = Arc::clone(&self);
+            server_clone.add_peer(peer.clone(), false).await.unwrap();
+
+            let peer_clone = peer.clone();
+            
             tokio::spawn(async move {
-                let _ = signal_server_clone.handle_connection(socket).await;
+                server_clone.handle_connection(peer_clone.clone()).await;
             });
         }
     }
-    async fn handle_connection(self: Arc<Self>, socket: TcpStream) {
-        let peer_socket = Arc::new(Mutex::new(socket));
-        let mut buf = [0; 1024];
+    async fn handle_connection(self: Arc<Self>, peer: Arc<Peer>) {
         loop {
-            let read_result = Arc::clone(&peer_socket).lock().await.read(&mut buf).await;
-            let n = match read_result {
-                Ok(0) => {
-                    println!("Connection closed by peer");
-                    break;
-                }
-                Ok(n) => n,
-                Err(e) => {
-                    println!("Failed to read from socket: {}", e);
-                    break;
-                }
-            };
+            let message = peer.receive().await.unwrap();
+            println!("Received message: {}", message);
 
-            let message = String::from_utf8_lossy(&buf[..n]).to_string();
-            println!("Received peer info: {:?}", message);
             let message: TransportPacket = serde_json::from_str(&message).unwrap();
-            let peer_info = &message.public_addr;
+            let peer_public_addr = &message.public_addr;
 
             let is_peer_wait_connection = message.act == "wait_connection";
             let is_peer_wait_stun_connection = message.protocol == Protocol::STUN;
-            let peer = Peer {
-                socket: peer_socket.clone(),
-                info: peer_info.to_string(),
-                wait_connection: Mutex::new(is_peer_wait_connection),
-            };
-
-            //check if peer is already in the list
-            let mut peers_guard = self.peers.lock().await;
-            let mut peer_added = false;
-            for item in peers_guard.iter() {
-                if &item.info == peer_info {
-                    println!("Peer already in the list: {}", peer_info);
-                    peer_added = true;
-                    if is_peer_wait_connection {
-                        let mut wait_connection = item.wait_connection.lock().await;
-                        *wait_connection = true;
-                    }
-                    break;
-                }
-            }
-            if !peer_added {
-                println!("Peer added to the list: {}", peer_info);
-                peers_guard.push(Arc::new(peer));
-            }
+            peer.set_wait_connection(is_peer_wait_connection).await;
+            peer.set_public_addr(peer_public_addr.clone()).await;
 
             if is_peer_wait_connection && is_peer_wait_stun_connection {
-                println!("Peer is ready to connect: {}", peer_info);
+                println!("Peer is ready to connect: {}", peer_public_addr);
                 //send answer packet
                 let answer_packet = TransportPacket {
-                    public_addr: peer_info.to_string(),
+                    public_addr: peer_public_addr.to_string(),
                     act: "answer".to_string(),
                     to: None,
                     data: None,
@@ -109,24 +74,54 @@ impl SignalServer {
                 };
                 println!("Sending answer packet");
                 let answer_packet = serde_json::to_string(&answer_packet).unwrap();
-                peer_socket
-                    .lock()
-                    .await
-                    .write_all(answer_packet.as_bytes())
-                    .await
-                    .unwrap();
-                println!("Sented answer packet: {}", answer_packet);
-            }
+                let res = peer.send(answer_packet).await;
+                match res {
+                    Ok(_) => println!("Successfully sent answer packet to peer: {:?}", peer.info.local_addr),
+                    Err(e) => println!("Failed to send answer packet to peer: {}", e),
+                }
 
-            drop(peers_guard);
+                let server_clone = Arc::clone(&self);
+                server_clone.wait_for_peers().await;
+            }
         }
     }
 
-    async fn send_peer_info(peer: Arc<Peer>, peer_info: String) {
+    async fn add_peer(
+        &self,
+        peer: Arc<Peer>,
+        is_peer_wait_connection: bool,
+    ) -> Result<Arc<Peer>, String> {
+        let mut peers_guard = self.peers.lock().await;
+        let mut peer_added = false;
+        let mut peer_res: Option<Arc<Peer>> = None;
+        for item in peers_guard.iter() {
+            if *item.info.local_addr == peer.info.local_addr {
+                println!("Peer already in the list: {}", peer.info.local_addr);
+                peer_added = true;
+                if is_peer_wait_connection {
+                    let mut wait_connection = item.info.wait_connection.lock().await;
+                    *wait_connection = true;
+                }
+                peer_res = Some(item.clone());
+                break;
+            }
+        }
+        if !peer_added {
+            println!("Peer added to the list: {:?}", peer.info);
+            peer_res = Some(peer.clone());
+            peers_guard.push(peer.clone());
+        }
+        if peer_res.is_none() {
+            return Err("Failed to add peer to the list".to_string());
+        }
+        return Ok(peer_res.clone().unwrap());
+    }
+
+    async fn send_peer_info(peer: Arc<Peer>, public_addr: String) {
         let wait_packet = TransportPacket {
-            public_addr: peer_info.clone(),
+            public_addr: public_addr.clone(),
             act: "wait_connection".to_string(),
-            to: Some(peer_info.clone()),
+            to: Some(public_addr.clone()),
             data: None,
             session_key: None,
             status: None,
@@ -134,52 +129,41 @@ impl SignalServer {
         };
         let wait_packet = serde_json::to_string(&wait_packet).unwrap();
 
-        let socket = peer.socket.clone(); // Не блокируйте на этой строке
-        let mut socket_locked = socket.lock().await; // теперь блокируем только сокет
+        let result = peer.send(wait_packet).await;
 
-        println!("Sending peer2 info to peer1: {}", wait_packet);
-        if let Err(e) = socket_locked.write_all(wait_packet.as_bytes()).await {
-            println!("Failed to send peer2 info to peer1: {}", e);
-        } else {
-            println!("Successfully sent peer2 info to peer1");
+        match result {
+            Ok(_) => println!("[p2p] Successfully sent peer to peer info"),
+            Err(e) => println!("[p2p] Failed to send peer to peer info: {}", e),
         }
     }
 
     async fn wait_for_peers(self: Arc<Self>) {
-        loop {
-            let peers_guard = self.peers.lock().await;
+        // loop {
+            let peers_snapshot = {
+                let peers_guard = self.peers.lock().await;
+                peers_guard.clone() // Извлекаем копию ссылок на Arc<Peer>
+            };
 
-            let mut have_wait_connection_peers = 0;
-            for peer in peers_guard.iter() {
-                if *peer.wait_connection.lock().await {
-                    have_wait_connection_peers += 1;
+            let mut waiting_peers: Vec<Arc<Peer>> = Vec::new();
+            for peer in peers_snapshot.iter() {
+                if *peer.info.wait_connection.lock().await {
+                    waiting_peers.push(peer.clone());
                 }
             }
 
-            if have_wait_connection_peers % 2 == 0 && have_wait_connection_peers > 0 {
+            if waiting_peers.len() % 2 == 0 && waiting_peers.len() > 0 {
                 println!("Found 2 peers, starting connection");
-                let first_peer = &peers_guard[0];
-                let second_peer = &peers_guard[1];
+                let first_peer = &waiting_peers[0];
+                let second_peer = &waiting_peers[1];
 
-                SignalServer::send_peer_info(
-                    first_peer.clone(),
-                    second_peer.info.clone(),
-                )
-                .await;
-                SignalServer::send_peer_info(
-                    second_peer.clone(),
-                    first_peer.info.clone(),
-                )
-                .await;
-
-                let mut first_peer = first_peer.wait_connection.lock().await;
-                *first_peer = false;
-
-                let mut second_peer = second_peer.wait_connection.lock().await;
-                *second_peer = false;
+                {
+                    SignalServer::send_peer_info(first_peer.clone(), second_peer.info.public_addr.lock().await.clone()).await;
+                    SignalServer::send_peer_info(second_peer.clone(), first_peer.info.public_addr.lock().await.clone()).await;
+                    first_peer.set_wait_connection(true).await;
+                    second_peer.set_wait_connection(true).await;
+                }
             }
-            drop(peers_guard);
             tokio::time::sleep(Duration::from_secs(1)).await;
-        }
+        // }
     }
 }
