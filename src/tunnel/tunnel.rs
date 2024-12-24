@@ -82,17 +82,17 @@ impl Tunnel {
             let sock = match UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
-                    return Err(format!("Не удалось привязать UDP-сокет: {:?}", e));
+                    return Err(format!("Failed to bind UDP socket: {:?}", e));
                 }
             };
 
             println!(
-                "Отправка запроса на соединение к {}:{}... {}/{}",
+                "Sending a connection request to {}:{}... {}/{}",
                 ip, port, timeout_count, timeout_default
             );
 
             if let Err(e) = sock.send_to(b"Con. Request!", addr).await {
-                println!("Не удалось отправить запрос на соединение: {:?}", e);
+                println!("Failed to send connection request: {:?}", e);
                 timeout_count -= 1;
                 continue;
             }
@@ -101,10 +101,10 @@ impl Tunnel {
             match timeout(Duration::from_secs(2), sock.recv_from(&mut buf)).await {
                 Ok(res) => match res {
                     Ok((_n, peer)) => {
-                        println!("Получен ответ от {}:{}...", peer.ip(), peer.port());
+                        println!("Reply received from {}:{}...", peer.ip(), peer.port());
                         if let Err(e) = sock.send_to(b"Con. Request!", addr).await {
                             println!(
-                                "Не удалось отправить повторный запрос на соединение: {:?}",
+                                "Failed to resend connection request: {:?}",
                                 e
                             );
                             timeout_count -= 1;
@@ -112,26 +112,25 @@ impl Tunnel {
                         }
                         self.client = Some(addr);
                         self.socket = Some(sock.clone());
-                        println!("Hole с {} успешно пробит!", addr);
+                        println!("Hole with {} successfully broken!", addr);
                         return Ok(());
                     }
                     Err(e) => {
                         timeout_count -= 1;
-                        println!("Ошибка при получении данных: {:?}", e);
+                        println!("Error while receiving data: {:?}", e);
                     }
                 },
                 Err(_) => {
                     timeout_count -= 1;
-                    println!("Нет рукопожатия с {}:{} пока что...", ip, port);
+                    println!("No handshake with {}:{} yet...", ip, port);
                 }
             }
         }
 
         if self.client.is_none() {
-            // panic!("Не удалось установить соединение с {}:{}", ip, port);
-            return Err(format!("Не удалось установить соединение с {}:{}", ip, port));
+            return Err(format!("Failed to establish connection with {}:{}", ip, port));
         }
-        Err(format!("Не удалось установить соединение с {}:{}", ip, port))
+        Err(format!("Failed to establish connection with {}:{}", ip, port))
     }
 
     pub fn backlife_cycle(&self, freq: u64) {

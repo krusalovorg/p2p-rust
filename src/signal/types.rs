@@ -13,9 +13,9 @@ pub enum Status {
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct TransportPacket {
-    pub public_addr: String,
+    pub public_addr: String, //к кому будет пытаться подключиться пир
     pub act: String, //info, answer, wait_connection,
-    pub to: Option<String>,
+    pub to: Option<String>, //кому отправляем данный пакет
     pub data: Option<serde_json::Value>,
     pub session_key: Option<String>,
     pub status: Option<Status>, // success, falied

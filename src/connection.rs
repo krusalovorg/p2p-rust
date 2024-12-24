@@ -83,6 +83,7 @@ impl Connection {
         while let Some(message) = rx.recv().await {
             match message {
                 Message::SendData(packet) => {
+                    println!("[connection] Sended packet: {:?}", packet);
                     signal_server.send_packet(packet).await.unwrap();
                 }
                 Message::GetResponse { tx } => {

@@ -58,6 +58,7 @@ impl Peer {
         while let Some(message) = rx.recv().await {
             match message {
                 Message::SendData(msg) => {
+                    println!("[process_message] Sending message to peer {}: {}", self.info.local_addr, msg);
                     self.send_data(&msg).await;
                 }
                 Message::GetResponse { tx } => {
@@ -79,7 +80,7 @@ impl Peer {
         }
     }
 
-    async fn send_data(&self, message: &str) {
+    pub async fn send_data(&self, message: &str) {
         if let Err(e) = self.socket.clone().write().await.write_all(message.as_bytes()).await {
             println!("Failed to send message to peer {}: {}", self.info.local_addr, e);
         } else {

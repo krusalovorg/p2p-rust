@@ -3,7 +3,7 @@ use crate::signal::{Protocol, TransportPacket};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpStream};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 #[derive(Debug)]
@@ -132,11 +132,6 @@ impl SignalClient {
         }
 
         if let Some(socket) = &self.socket {
-            println!(
-                "Sending public address to signal server: {}",
-                connect_packet
-            );
-
             let result = socket
                 .write()
                 .await

@@ -2,6 +2,7 @@ use anyhow::Result;
 // use async_std::path::Path;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{
     env,
     //  fs, result
@@ -108,6 +109,7 @@ async fn run_peer() {
                         if status.turn_connection && !status.connected {
                             let result_turn_tunnel =
                                 turn_tunnel(packet_clone, Arc::clone(&tunnel), &connection).await;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                             println!("Result turn tunnel {:?}", result_turn_tunnel);
                             match result_turn_tunnel {
                                 Ok(r) => {
@@ -126,8 +128,9 @@ async fn run_peer() {
                                     println!("Fail: {}", e);
                                 }
                             }
+                            println!("Wait new packets...");
                         } else {
-                            println!("Подключено успешно, можно обрабатывать прочие сообщения")
+                            println!("Connected successfully, you can process other packets")
                         }
                     }
                 }
@@ -178,6 +181,7 @@ async fn turn_tunnel(
             status: None,
             protocol: Protocol::TURN,
         };
+        println!("Sending accept connection");
         let result: std::result::Result<(), String> = signal.send_packet(packet_hello).await;
         match result {
             Ok(_) => {
@@ -198,9 +202,7 @@ async fn stun_tunnel(packet: TransportPacket, tunnel: Arc<Mutex<Tunnel>>) -> Res
     );
     match SignalClient::extract_addr(packet.public_addr).await {
         Ok((ip, port)) => {
-            println!("Extracted address: {}:{}", ip, port);
             let ip = ip.to_string();
-            println!("Received peer info: {}:{}", ip, port);
             let mut tunnel = tunnel.lock().await;
             println!("Try connecting to {}:{}", ip, port);
             match tunnel.make_connection(&ip, port, 10).await {
