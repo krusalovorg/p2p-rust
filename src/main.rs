@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde_json::json;
 // use async_std::path::Path;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ mod tunnel;
 use crate::config::Config;
 use crate::connection::Connection;
 // use crate::db::{Fragment, P2PDatabase, Storage};
-use crate::signal::{SignalServer, TransportPacket, Protocol, SignalClient};
+use crate::signal::{Protocol, SignalClient, SignalServer, TransportPacket};
 use crate::tunnel::Tunnel;
 
 #[tokio::main]
@@ -73,65 +74,81 @@ async fn run_peer() {
         match result {
             Ok(packet) => {
                 println!("Received packet: {:?}", packet);
-                if packet.act == "wait_connection" {
-                    println!("Received wait_connection packet");
-                    let public_addr = packet.public_addr.clone();
-                    let packet_clone = packet.clone();
-                    let protocol_connection = packet.protocol.clone();
-                    if protocol_connection == Protocol::STUN {
-                        println!("Start stun tunnel");
-                        let result_tunnel = stun_tunnel(packet, Arc::clone(&tunnel)).await;
-                        match result_tunnel {
-                            Ok(_) => {
-                                println!("Connection established!");
+                println!("Received wait_connection packet");
+                let public_addr = packet.public_addr.clone();
+                let packet_clone = packet.clone();
+                let protocol_connection = packet.protocol.clone();
+                if protocol_connection == Protocol::STUN && packet.act == "wait_connection" {
+                    println!("Start stun tunnel");
+                    let result_tunnel = stun_tunnel(packet, Arc::clone(&tunnel)).await;
+                    match result_tunnel {
+                        Ok(_) => {
+                            println!("[STUN] Connection established!");
+                        }
+                        Err(e) => {
+                            connections_turn.insert(
+                                public_addr.clone(),
+                                ConnectionTurnStatus {
+                                    connected: false,
+                                    turn_connection: true,
+                                },
+                            );
+                            println!("Failed to establish connection: {}", e);
+                        }
+                    }
+                } else if protocol_connection == Protocol::TURN && packet.act == "wait_connection" {
+                    connections_turn.insert(
+                        public_addr.clone(),
+                        ConnectionTurnStatus {
+                            connected: false,
+                            turn_connection: true,
+                        },
+                    );
+                }
+                if let Some(status) = connections_turn.get_mut(&public_addr) {
+                    if status.turn_connection && !status.connected {
+                        let result_turn_tunnel =
+                            turn_tunnel(packet_clone, Arc::clone(&tunnel), &connection).await;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        println!("Result turn tunnel {:?}", result_turn_tunnel);
+                        match result_turn_tunnel {
+                            Ok(r) => {
+                                println!("Result turn tunnel: {}", r);
+                                if r == "successful_connection" {
+                                    println!("[TURN] Connection established!");
+                                    status.connected = true;
+                                    status.turn_connection = false;
+
+                                    let packet_hello = TransportPacket {
+                                        public_addr: public_addr.clone(),
+                                        act: "test_turn".to_string(),
+                                        to: Some(public_addr.clone()),
+                                        data: Some(
+                                            json!({
+                                                "test": "test",
+                                                "my_ip": public_addr.clone()
+                                            }),
+                                        ),
+                                        session_key: None,
+                                        status: None,
+                                        protocol: Protocol::TURN,
+                                    };
+                                    println!("Sending accept connection");
+                                    let _ = connection.send_packet(packet_hello).await;
+                            
+                                } else if r == "send_wait_connection" {
+                                    println!("Wait answer acception connection...");
+                                }
                             }
                             Err(e) => {
-                                connections_turn.insert(
-                                    public_addr.clone(),
-                                    ConnectionTurnStatus {
-                                        connected: false,
-                                        turn_connection: true,
-                                    },
-                                );
-                                println!("Failed to establish connection: {}", e);
+                                status.connected = false;
+                                status.turn_connection = true;
+                                println!("Fail: {}", e);
                             }
                         }
-                    } else if protocol_connection == Protocol::TURN {
-                        connections_turn.insert(
-                            public_addr.clone(),
-                            ConnectionTurnStatus {
-                                connected: false,
-                                turn_connection: true,
-                            },
-                        );
-                    }
-                    if let Some(status) = connections_turn.get_mut(&public_addr) {
-                        if status.turn_connection && !status.connected {
-                            let result_turn_tunnel =
-                                turn_tunnel(packet_clone, Arc::clone(&tunnel), &connection).await;
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            println!("Result turn tunnel {:?}", result_turn_tunnel);
-                            match result_turn_tunnel {
-                                Ok(r) => {
-                                    println!("Result turn tunnel: {}", r);
-                                    if r == "successful_connection" {
-                                        println!("Connection established!");
-                                        status.connected = true;
-                                        status.turn_connection = false;
-                                    } else if r == "send_wait_connection" {
-                                        println!("Wait answer acception connection...");
-                                    }
-                                }
-                                Err(e) => {
-                                    status.connected = false;
-                                    status.turn_connection = true;
-                                    println!("Fail: {}", e);
-                                }
-                            }
-                            println!("Wait new packets...");
-                        } else {
-                            println!("Connected successfully, you can process other packets")
-                        }
+                        println!("Wait new packets...");
+                    } else {
+                        println!("Connected successfully, you can process other packets")
                     }
                 }
             }
@@ -182,7 +199,7 @@ async fn turn_tunnel(
             protocol: Protocol::TURN,
         };
         println!("Sending accept connection");
-        let result: std::result::Result<(), String> = signal.send_packet(packet_hello).await;
+        let result = signal.send_packet(packet_hello).await;
         match result {
             Ok(_) => {
                 return Ok("successful_connection".to_string());

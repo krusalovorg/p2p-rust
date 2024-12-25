@@ -26,11 +26,6 @@ impl SignalServer {
         let listener = TcpListener::bind(addr.clone()).await.unwrap();
         println!("Signal server running on {}", addr);
 
-        // let signal_server_clone = Arc::clone(&self);
-        // tokio::spawn(async move {
-        //     signal_server_clone.wait_for_peers().await;
-        // });
-
         loop {
             let (socket, _) = listener.accept().await.unwrap();
             println!("New connection: {}", socket.peer_addr().unwrap());
@@ -102,10 +97,11 @@ impl SignalServer {
                 }
                 Protocol::TURN => {
                     if message.to != None {
+                        println!("Received turn packet: {:#?}", message);
                         let peers_guard = self.peers.lock().await;
                         for item in peers_guard.iter() {
                             if Some(item.info.public_addr.lock().await.to_string()) == message.to {
-                                println!("Send turn packet: {}", peer.info.local_addr);
+                                println!("Send turn packet: {} {:#?}", peer.info.local_addr, message);
 
                                 let turn_packet = TransportPacket {
                                     public_addr: message.public_addr.to_string(),
@@ -210,13 +206,15 @@ impl SignalServer {
                     SignalServer::send_peer_info(second_peer.clone(), first_peer_public_addr).await;
                     println!("Sended packet to peer: {}", second_peer.info.local_addr);
                 }
+                second_peer.set_wait_connection(false).await;
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 {
                     println!("Sending packet to: {}", first_peer.info.local_addr);
                     SignalServer::send_peer_info(first_peer.clone(), second_peer_public_addr).await;
                     println!("Sended packet to peer: {}", first_peer.info.local_addr);
                 }
-
+                first_peer.set_wait_connection(false).await;
+                
                 // println!(
                 //     "Before sending: first_peer wait_connection = {}, second_peer wait_connection = {}",
                 //     *first_peer.info.wait_connection.lock().await,
