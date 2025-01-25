@@ -24,11 +24,11 @@ impl SignalServer {
     pub async fn run(self: Arc<Self>) {
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(addr.clone()).await.unwrap();
-        println!("Signal server running on {}", addr);
+        println!("[SignalServer] Running on {}", addr);
 
         loop {
             let (socket, _) = listener.accept().await.unwrap();
-            println!("New connection: {}", socket.peer_addr().unwrap());
+            println!("[SignalServer] New connection: {}", socket.peer_addr().unwrap());
 
             let peer = Peer::new(socket, None);
 
@@ -42,12 +42,25 @@ impl SignalServer {
             });
         }
     }
+
     async fn handle_connection(self: Arc<Self>, peer: Arc<Peer>) {
         loop {
-            let message = peer.receive().await.unwrap();
-            // println!("Received message: {}", message);
+            let message = match peer.receive().await {
+                Ok(msg) => msg,
+                Err(e) => {
+                    println!("[SignalServer] Failed to receive message from peer {}: {}", peer.info.local_addr, e);
+                    continue;
+                }
+            };
+            println!("[SignalServer] Received message: {}", message);
 
-            let message: TransportPacket = serde_json::from_str(&message).unwrap();
+            let message: TransportPacket = match serde_json::from_str(&message) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    println!("[SignalServer] Failed to parse message from peer {}: {}. Message: {}", peer.info.local_addr, e, message);
+                    continue;
+                }
+            };
             let peer_public_addr = &message.public_addr;
 
             let is_peer_wait_connection = message.act == "wait_connection";
@@ -56,64 +69,47 @@ impl SignalServer {
             peer.set_public_addr(peer_public_addr.clone()).await;
 
             if message.act == "info" {
-                println!("================");
-                println!("CONNECTED PEER INFO:");
-                println!("PUBLIC ADDRESS: {}", peer_public_addr);
-                println!("LOCAL ADDRESS: {}", peer.info.local_addr);
-                println!("================");
+                println!("[SignalServer] =================");
+                println!("[SignalServer] CONNECTED PEER INFO:");
+                println!("[SignalServer] PUBLIC ADDRESS: {}", peer_public_addr);
+                println!("[SignalServer] LOCAL ADDRESS: {}", peer.info.local_addr);
+                println!("[SignalServer] =================");
             }
 
             match message.protocol {
                 Protocol::STUN => {
-                    if (is_peer_wait_connection) {
-                        println!("Peer is ready to connect: {}", peer_public_addr);
-                        //send answer packet
-                        // let answer_packet = TransportPacket {
-                        //     public_addr: peer_public_addr.to_string(),
-                        //     act: "answer".to_string(),
-                        //     to: None,
-                        //     data: None,
-                        //     session_key: None,
-                        //     status: None,
-                        //     protocol: Protocol::STUN,
-                        // };
-                        // println!("Sending answer packet");
-                        // let answer_packet = serde_json::to_string(&answer_packet).unwrap();
-                        // let res = peer.send(answer_packet).await;
-                        // match res {
-                        //     Ok(_) => println!(
-                        //         "Successfully sent answer packet to peer: {:?}",
-                        //         peer.info.local_addr
-                        //     ),
-                        //     Err(e) => println!("Failed to send answer packet to peer: {}", e),
-                        // }
-
-                        if (self.peers.lock().await.len() >= 1) {
+                    if is_peer_wait_connection {
+                        println!("[SignalServer] Peer is ready to connect: {}", peer_public_addr);
+                        if self.peers.lock().await.len() >= 1 {
                             let server_clone = Arc::clone(&self);
                             server_clone.wait_for_peers().await;
-                            println!("End wait peers");
+                            println!("[SignalServer] End wait peers");
                         }
                     }
                 }
                 Protocol::TURN => {
-                    if message.to != None {
-                        println!("Received turn packet: {:#?}", message);
+                    if let Some(to) = &message.to {
+                        println!("[SignalServer] Received turn packet: {:?}", message);
                         let peers_guard = self.peers.lock().await;
                         for item in peers_guard.iter() {
-                            if Some(item.info.public_addr.lock().await.to_string()) == message.to {
-                                println!("Send turn packet: {} {:#?}", peer.info.local_addr, message);
+                            if Some(item.info.public_addr.lock().await.to_string()) == Some(to.clone()) {
+                                println!("[SignalServer] Send turn packet: {} {:?}", peer.info.local_addr, message);
 
                                 let turn_packet = TransportPacket {
                                     public_addr: message.public_addr.to_string(),
                                     act: message.act.to_string(),
-                                    to: message.to,
-                                    data: message.data,
-                                    session_key: message.session_key,
-                                    status: message.status,
+                                    to: message.to.clone(),
+                                    data: message.data.clone(),
+                                    session_key: message.session_key.clone(),
+                                    status: message.status.clone(),
                                     protocol: Protocol::TURN,
                                 };
                                 let turn_packet = serde_json::to_string(&turn_packet).unwrap();
-                                item.send(turn_packet).await.unwrap();
+                                if let Err(e) = item.send(turn_packet).await {
+                                    println!("[SignalServer] Failed to send turn packet to peer {}: {}", item.info.local_addr, e);
+                                } else {
+                                    println!("[SignalServer] Successfully send turn packet to peer {}", item.info.local_addr);
+                                }
                                 break;
                             }
                         }

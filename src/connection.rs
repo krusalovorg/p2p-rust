@@ -49,10 +49,7 @@ impl Connection {
         tunnel_public_ip: String,
         tunnel_public_port: u16,
     ) {
-        println!(
-            "[task 1] Connecting to signal server {}:{}",
-            signal_server_ip, signal_server_port
-        );
+        println!("[Connection] Connecting to signal server {}:{}", signal_server_ip, signal_server_port);
 
         let mut signal_server = SignalClient::new();
         if let Err(e) = signal_server
@@ -64,7 +61,7 @@ impl Connection {
             )
             .await
         {
-            println!("Failed to connect to signal server: {}", e);
+            println!("[Connection] Failed to connect to signal server: {}", e);
             return;
         }
 
@@ -76,19 +73,29 @@ impl Connection {
         {
             Ok(_) => (),
             Err(e) => {
-                println!("Failed to send peer info request: {}", e);
+                println!("[Connection] Failed to send peer info request: {}", e);
             }
         }
 
         while let Some(message) = rx.recv().await {
             match message {
                 Message::SendData(packet) => {
-                    println!("[connection] Sended packet: {:?}", packet);
-                    signal_server.send_packet(packet).await.unwrap();
+                    println!("[Connection] Sending packet: {:?}", packet);
+                    if let Err(e) = signal_server.send_packet(packet).await {
+                        println!("[Connection] Failed to send packet: {}", e);
+                    }
                 }
                 Message::GetResponse { tx } => {
-                    let response = signal_server.receive_message().await.unwrap();
-                    tx.send(response);
+                    let response = match signal_server.receive_message().await {
+                        Ok(response) => response,
+                        Err(e) => {
+                            println!("[Connection] Failed to receive message: {}", e);
+                            continue;
+                        }
+                    };
+                    if let Err(e) = tx.send(response) {
+                        println!("[Connection] Failed to send response to channel: {:?}", e);
+                    }
                 }
             }
         }

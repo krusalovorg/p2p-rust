@@ -43,10 +43,7 @@ impl SignalClient {
         public_ip: &str,
         public_port: u16,
     ) -> Result<(), String> {
-        println!(
-            "[signal] Connecting to signal server {}:{}",
-            signal_server_ip, signal_server_port
-        );
+        println!("[SignalClient] Connecting to signal server {}:{}", signal_server_ip, signal_server_port);
         match TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port)).await {
             Ok(socket) => {
                 let socket = Arc::new(RwLock::new(socket));
@@ -68,29 +65,28 @@ impl SignalClient {
                         .write_all(connect_packet.as_bytes())
                         .await
                         .map_err(|e| {
-                            println!("Failed to send connect packet: {}", e);
+                            println!("[SignalClient] Failed to send connect packet: {}", e);
                             e.to_string()
                         })?;
                 }
                 Ok(())
             }
             Err(e) => {
-                println!("Failed to connect to signal server: {}", e);
+                println!("[SignalClient] Failed to connect to signal server: {}", e);
                 Err(e.to_string())
             }
         }
     }
 
     pub async fn send_packet(&self, packet: TransportPacket) -> Result<(), String> {
-        println!("[send_packet] Packet: {:?}", packet);
         let string_packet = serde_json::to_string(&packet).unwrap();
 
         if self.socket.is_none() {
-            return Err("Socket is not connected".to_string());
+            return Err("[SignalClient] Socket is not connected".to_string());
         }
 
         if let Some(socket) = &self.socket {
-            println!("Sending turn data to signal server: {}", string_packet);
+            println!("[SignalClient] Sending turn data to signal server: {}", string_packet);
 
             let result = socket
                 .clone()
@@ -98,16 +94,15 @@ impl SignalClient {
                 .await
                 .write_all(string_packet.as_bytes())
                 .await;
-            println!("Sended");
+            println!("[SignalClient] Packet sent: {}", string_packet);
 
             match result {
-                Ok(_) => {
-                    return Ok(());
-                }
-                Err(e) => return Err(e.to_string()),
+                Ok(_) => Ok(()),
+                Err(e) => Err(e.to_string()),
             }
+        } else {
+            Err("[SignalClient] Socket error".to_string())
         }
-        return Err("Socket error".to_string());
     }
 
     // для пира
@@ -160,18 +155,24 @@ impl SignalClient {
         }
         if let Some(socket) = &self.socket {
             let mut buf: [u8; 1024] = [0; 1024];
-            let n = socket
-                .write()
-                .await
-                .read(&mut buf)
-                .await
-                .map_err(|e| e.to_string())?;
+            let n = match socket.write().await.read(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    println!("[SignalClient] Failed to read from socket: {}", e);
+                    return Err(e.to_string());
+                }
+            };
             if n == 0 {
                 return Err("Received empty message".to_string());
             }
             let peer_info: String = String::from_utf8_lossy(&buf[..n]).to_string();
-            let message: TransportPacket =
-                serde_json::from_str(&peer_info).map_err(|e| e.to_string())?;
+            let message: TransportPacket = match serde_json::from_str(&peer_info) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    println!("[SignalClient] Failed to parse message: {}", e);
+                    return Err(e.to_string());
+                }
+            };
 
             Ok(message)
         } else {

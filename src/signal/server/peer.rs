@@ -58,18 +58,18 @@ impl Peer {
         while let Some(message) = rx.recv().await {
             match message {
                 Message::SendData(msg) => {
-                    println!("[process_message] Sending message to peer {}: {}", self.info.local_addr, msg);
+                    println!("[Peer] Sending message to peer {}: {}", self.info.local_addr, msg);
                     self.send_data(&msg).await;
                 }
                 Message::GetResponse { tx } => {
                     let response = self.receive_message().await;
-                    println!("Received response from peer {}: {}", self.info.local_addr, response.clone().unwrap());
+                    println!("[Peer] Received response from peer {}: {}", self.info.local_addr, response.clone().unwrap());
                     match response {
                         Ok(response) => {
-                            tx.send(response);
+                            tx.send(response).unwrap();
                         }
                         Err(e) => {
-                            println!("Failed to receive response from peer {}: {}", self.info.local_addr, e);
+                            println!("[Peer] Failed to receive response from peer {}: {}", self.info.local_addr, e);
                         }
                     }
                 }
@@ -83,8 +83,10 @@ impl Peer {
     pub async fn send_data(&self, message: &str) {
         if let Err(e) = self.socket.clone().write().await.write_all(message.as_bytes()).await {
             println!("Failed to send message to peer {}: {}", self.info.local_addr, e);
-        } else {
-            println!("Message sent to peer {}: {}", self.info.local_addr, message);
+        }
+         else {
+            //происходит deadlock, не отправляется пиру потому что пир используется 
+            println!("[SendData] Message sent to peer {}: {}", self.info.local_addr, message);
         }
     }
 

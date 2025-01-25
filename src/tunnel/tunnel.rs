@@ -75,24 +75,20 @@ impl Tunnel {
             .expect("Invalid address");
         let local_port = self.local_port;
         let mut timeout_count = timeout_default;
-        //таймер на 2 секунды
-        
+        println!("[STUN] Trying to connect to {}:{}", ip, port);
+
         while timeout_count > 0 {
-            // Повторное создание сокета
             let sock = match UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
-                    return Err(format!("Failed to bind UDP socket: {:?}", e));
+                    return Err(format!("[STUN] Failed to bind UDP socket: {:?}", e));
                 }
             };
 
-            println!(
-                "Sending a connection request to {}:{}... {}/{}",
-                ip, port, timeout_count, timeout_default
-            );
+            println!("[STUN] Sending connection request to {}:{}... {}/{}", ip, port, timeout_count, timeout_default);
 
             if let Err(e) = sock.send_to(b"Con. Request!", addr).await {
-                println!("Failed to send connection request: {:?}", e);
+                println!("[STUN] Failed to send connection request: {:?}", e);
                 timeout_count -= 1;
                 continue;
             }
@@ -101,36 +97,33 @@ impl Tunnel {
             match timeout(Duration::from_secs(2), sock.recv_from(&mut buf)).await {
                 Ok(res) => match res {
                     Ok((_n, peer)) => {
-                        println!("Reply received from {}:{}...", peer.ip(), peer.port());
+                        println!("[STUN] Reply received from {}:{}...", peer.ip(), peer.port());
                         if let Err(e) = sock.send_to(b"Con. Request!", addr).await {
-                            println!(
-                                "Failed to resend connection request: {:?}",
-                                e
-                            );
+                            println!("[STUN] Failed to resend connection request: {:?}", e);
                             timeout_count -= 1;
                             continue;
                         }
                         self.client = Some(addr);
                         self.socket = Some(sock.clone());
-                        println!("Hole with {} successfully broken!", addr);
+                        println!("[STUN] Hole with {} successfully broken!", addr);
                         return Ok(());
                     }
                     Err(e) => {
                         timeout_count -= 1;
-                        println!("Error while receiving data: {:?}", e);
+                        println!("[STUN] Error while receiving data: {:?}", e);
                     }
                 },
                 Err(_) => {
                     timeout_count -= 1;
-                    println!("No handshake with {}:{} yet...", ip, port);
+                    println!("[STUN] No handshake with {}:{} yet...", ip, port);
                 }
             }
         }
 
         if self.client.is_none() {
-            return Err(format!("Failed to establish connection with {}:{}", ip, port));
+            return Err(format!("[STUN] Failed to establish connection with {}:{}", ip, port));
         }
-        Err(format!("Failed to establish connection with {}:{}", ip, port))
+        Err(format!("[STUN] Failed to establish connection with {}:{}", ip, port))
     }
 
     pub fn backlife_cycle(&self, freq: u64) {
@@ -140,10 +133,10 @@ impl Tunnel {
                 thread::spawn(move || {
                     Self::life_cycle(sock, client, freq);
                 });
-                println!("Session with {} stabilized!", client);
+                println!("[STUN] Session with {} stabilized!", client);
             }
         } else {
-            println!("No client to stabilize session with.");
+            println!("[STUN] No client to stabilize session with.");
         }
     }
 
@@ -161,26 +154,16 @@ impl Tunnel {
 
     fn handle_received_data(data: &[u8], reply_addr: SocketAddr, client: SocketAddr, sock: Arc<UdpSocket>) {
         let protocol = &data[..3];
-        println!(
-            "{}: Received {} from {}: {:?}",
-            client.ip(),
-            str::from_utf8(protocol).unwrap(),
-            reply_addr,
-            data
-        );
+        println!("[STUN] {}: Received {} from {}: {:?}", client.ip(), str::from_utf8(protocol).unwrap(), reply_addr, data);
 
         if protocol == b"KPL" {
             return;
         } else if protocol == b"MSG" {
             let message: Message = serde_json::from_slice(&data[3..]).unwrap();
-            println!("Message from {}: {}", client.ip(), message.text);
+            println!("[STUN] Message from {}: {}", client.ip(), message.text);
         } else if protocol == b"FIL" {
             let file_message: FileMessage = serde_json::from_slice(&data[3..]).unwrap();
-            println!(
-                "Received file {} from {}",
-                file_message.filename,
-                client.ip()
-            );
+            println!("[STUN] Received file {} from {}", file_message.filename, client.ip());
             task::block_on(Self::save_file(&file_message.filename, &file_message.data));
         }
     }
