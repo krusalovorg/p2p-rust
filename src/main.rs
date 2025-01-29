@@ -1,5 +1,4 @@
 use anyhow::Result;
-use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +19,7 @@ use crate::tunnel::Tunnel;
 async fn main() {
     let args: Vec<String> = env::args().collect();
     if args.contains(&"--signal".to_string()) {
-        let signal_server = Arc::new(SignalServer::new());
+        let signal_server = SignalServer::new();
         signal_server.run().await;
     } else {
         run_peer().await;

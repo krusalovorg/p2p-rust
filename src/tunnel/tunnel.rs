@@ -47,7 +47,8 @@ impl Tunnel {
         }
         let mut client = client.unwrap();
 
-        let res = client.binding_request("stun.l.google.com:19302", None).await;
+        // stun.l.google.com:19302
+        let res = client.binding_request("stun.nextcloud.com:443", None).await;
         if let Err(e) = res {
             panic!("Failed to send binding request: {:?}", e);
         }

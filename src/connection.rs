@@ -79,7 +79,7 @@ impl Connection {
 
         while let Some(message) = rx.recv().await {
             match message {
-                Message::SendData(packet) => {
+                Message::SendData(mut packet) => {
                     println!("[Connection] Sending packet: {:?}", packet);
                     if let Err(e) = signal_server.send_packet(packet).await {
                         println!("[Connection] Failed to send packet: {}", e);
