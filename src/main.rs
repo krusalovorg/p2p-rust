@@ -1,28 +1,63 @@
 use anyhow::Result;
+use clap::{Arg, Command};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use std::env;
 use tokio::sync::Mutex;
+#[macro_use]
+extern crate lazy_static;
+use std::path::PathBuf;
 
 mod config;
 mod connection;
 mod signal;
 mod tunnel;
+mod db;
 
 use crate::config::Config;
 use crate::connection::Connection;
 use crate::signal::{Protocol, SignalClient, SignalServer, TransportPacket};
 use crate::tunnel::Tunnel;
+use crate::db::P2PDatabase;
+
+lazy_static! {
+    pub static ref GLOBAL_DB: P2PDatabase = {
+        let matches = Command::new("P2P Server")
+        .arg(Arg::new("db-path")
+            .long("db-path")
+            .action(clap::ArgAction::Set)
+            .value_name("FILE")
+            .help("Path to the database directory"))
+        .get_matches();
+        let db_path = matches.get_one::<String>("db-path")
+            .map(|s| s.as_str())
+            .unwrap_or("./storage");
+        P2PDatabase::new(PathBuf::from(db_path).as_path())
+    };
+}
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.contains(&"--signal".to_string()) {
+    let matches = Command::new("P2P Server")
+        .arg(Arg::new("signal")
+            .long("signal")
+            .action(clap::ArgAction::SetTrue)
+            .help("Run as signal server"))
+        .arg(Arg::new("db-path")
+            .long("db-path")
+            .action(clap::ArgAction::Set)
+            .value_name("FILE")
+            .help("Path to the database directory"))
+        .get_matches();
+
+    let db = &*GLOBAL_DB;
+
+    if matches.get_flag("signal") {
         let signal_server = SignalServer::new();
         signal_server.run().await;
     } else {
-        run_peer().await;
+        run_peer(db).await;
     }
 }
 
@@ -32,7 +67,7 @@ struct ConnectionTurnStatus {
     turn_connection: bool,
 }
 
-async fn run_peer() {
+async fn run_peer(db: &P2PDatabase) {
     let config: Config = Config::from_file("config.toml");
     let tunnel = Arc::new(Mutex::new(Tunnel::new().await));
 
@@ -63,6 +98,9 @@ async fn run_peer() {
     .await;
 
     let mut connections_turn: HashMap<String, ConnectionTurnStatus> = HashMap::new();
+
+    let peer_id = db.get_peer_id();
+    println!("[Peer] Your UUID: {}", peer_id);
 
     loop {
         let result = connection.get_response().await;
@@ -137,7 +175,31 @@ async fn run_peer() {
                         }
                         println!("[Peer] Wait new packets...");
                     } else {
-                        println!("[Peer] Connected successfully, you can process other packets")
+                        println!("[Peer] Connected successfully, you can process other packets");
+
+                        // Запуск нового потока для обработки ввода текста и отправки его через TURN
+                        // let tunnel_clone = Arc::clone(&tunnel);
+                        // let connection_clone = connection;
+                        // let from_public_addr_clone = from_public_addr.clone();
+                        // tokio::spawn(async move {
+                        //     loop {
+                        //         let mut input = String::new();
+                        //         std::io::stdin().read_line(&mut input).unwrap();
+                        //         let trimmed_input = input.trim();
+
+                        //         let packet_message = TransportPacket {
+                        //             public_addr: my_public_addr.clone(),
+                        //             act: "message".to_string(),
+                        //             to: Some(from_public_addr_clone.clone()),
+                        //             data: Some(json!({"data": trimmed_input})),
+                        //             session_key: None,
+                        //             status: None,
+                        //             protocol: Protocol::TURN,
+                        //         };
+
+                        //         let _ = connection_clone.send_packet(packet_message).await;
+                        //     }
+                        // });
                     }
                 } else {
                     println!("[Peer] [Turn] Connection not found");

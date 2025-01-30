@@ -1,3 +1,3 @@
 mod db;
 
-pub use self::db::{P2PDatabase, Fragment, Storage};
+pub use db::P2PDatabase;

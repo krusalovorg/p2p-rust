@@ -1,9 +1,10 @@
 use crate::config::Config;
 use crate::signal::{Protocol, TransportPacket};
+use crate::GLOBAL_DB;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 #[derive(Debug)]
@@ -43,21 +44,28 @@ impl SignalClient {
         public_ip: &str,
         public_port: u16,
     ) -> Result<(), String> {
-        println!("[SignalClient] Connecting to signal server {}:{}", signal_server_ip, signal_server_port);
+        println!(
+            "[SignalClient] Connecting to signal server {}:{}",
+            signal_server_ip, signal_server_port
+        );
+
         match TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port)).await {
             Ok(socket) => {
                 let socket = Arc::new(RwLock::new(socket));
                 self.socket = Some(socket);
+
                 let connect_packet = TransportPacket {
                     public_addr: format!("{}:{}", public_ip, public_port),
                     act: "info".to_string(),
                     to: None,
-                    data: None,
+                    data: Some(serde_json::json!({ "peer_uuid": &GLOBAL_DB.get_peer_id() })), // Добавляем UUID в пакет
                     session_key: None,
                     status: None,
                     protocol: Protocol::SIGNAL,
                 };
+
                 let connect_packet = serde_json::to_string(&connect_packet).unwrap();
+
                 if let Some(socket) = &self.socket {
                     socket
                         .write()
@@ -69,6 +77,7 @@ impl SignalClient {
                             e.to_string()
                         })?;
                 }
+
                 Ok(())
             }
             Err(e) => {
@@ -94,6 +103,7 @@ impl SignalClient {
                 .await
                 .write_all(string_packet.as_bytes())
                 .await;
+
             println!("[SignalClient] Packet sent: {}", string_packet);
 
             match result {
@@ -105,7 +115,6 @@ impl SignalClient {
         }
     }
 
-    // для пира
     pub async fn send_peer_info_request(
         &self,
         public_ip: &str,
@@ -115,11 +124,12 @@ impl SignalClient {
             public_addr: format!("{}:{}", public_ip, public_port),
             act: "wait_connection".to_string(),
             to: None,
-            data: None,
+            data: Some(serde_json::json!({ "peer_uuid": GLOBAL_DB.get_peer_id() })), // Добавляем UUID в пакет
             session_key: None,
             status: None,
             protocol: Protocol::STUN,
         };
+
         let connect_packet = serde_json::to_string(&connect_packet).unwrap();
 
         if self.socket.is_none() {
@@ -148,11 +158,11 @@ impl SignalClient {
         }
     }
 
-    //Со стороны юзера получение сообщений от сигнального сервера
     pub async fn receive_message(&self) -> Result<TransportPacket, String> {
         if self.socket.is_none() {
             return Err("Socket is not connected".to_string());
         }
+
         if let Some(socket) = &self.socket {
             let mut buf: [u8; 1024] = [0; 1024];
             let n = match socket.write().await.read(&mut buf).await {
@@ -162,9 +172,11 @@ impl SignalClient {
                     return Err(e.to_string());
                 }
             };
+
             if n == 0 {
                 return Err("Received empty message".to_string());
             }
+
             let peer_info: String = String::from_utf8_lossy(&buf[..n]).to_string();
             let message: TransportPacket = match serde_json::from_str(&peer_info) {
                 Ok(msg) => msg,

@@ -1,9 +1,11 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
 use tokio::time::sleep;
 
+use crate::db::P2PDatabase;
 use crate::signal::{SignalClient, TransportPacket};
 
 #[derive(Debug)]
