@@ -1,4 +1,5 @@
 use async_std::net::{SocketAddr, UdpSocket};
+use async_std::sync::RwLock;
 use async_std::{fs, task};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -25,18 +26,21 @@ pub struct Tunnel {
     pub public_port: u16,
     socket: Option<Arc<UdpSocket>>,
     client: Option<SocketAddr>,
+    pub is_connected: Arc<RwLock<bool>>,
 }
 
 impl Tunnel {
     pub async fn new() -> Self {
         let local_port = rand::thread_rng().gen_range(16000..65535);
         let (public_ip, public_port) = Self::stun(local_port).await;
+        let mut is_connected = Arc::new(RwLock::new(false));
         Tunnel {
             local_port,
             public_ip,
             public_port,
             socket: None,
             client: None,
+            is_connected,
         }
     }
 
@@ -70,7 +74,12 @@ impl Tunnel {
         }
     }
 
-    pub async fn make_connection(&mut self, ip: &str, port: u16, timeout_default: u64) -> Result<(), String> {
+    pub async fn make_connection(
+        &mut self,
+        ip: &str,
+        port: u16,
+        timeout_default: u64,
+    ) -> Result<(), String> {
         let addr = format!("{}:{}", ip, port)
             .parse::<SocketAddr>()
             .expect("Invalid address");
@@ -86,7 +95,10 @@ impl Tunnel {
                 }
             };
 
-            println!("[STUN] Sending connection request to {}:{}... {}/{}", ip, port, timeout_count, timeout_default);
+            println!(
+                "[STUN] Sending connection request to {}:{}... {}/{}",
+                ip, port, timeout_count, timeout_default
+            );
 
             if let Err(e) = sock.send_to(b"Con. Request!", addr).await {
                 println!("[STUN] Failed to send connection request: {:?}", e);
@@ -98,7 +110,11 @@ impl Tunnel {
             match timeout(Duration::from_secs(2), sock.recv_from(&mut buf)).await {
                 Ok(res) => match res {
                     Ok((_n, peer)) => {
-                        println!("[STUN] Reply received from {}:{}...", peer.ip(), peer.port());
+                        println!(
+                            "[STUN] Reply received from {}:{}...",
+                            peer.ip(),
+                            peer.port()
+                        );
                         if let Err(e) = sock.send_to(b"Con. Request!", addr).await {
                             println!("[STUN] Failed to resend connection request: {:?}", e);
                             timeout_count -= 1;
@@ -106,6 +122,7 @@ impl Tunnel {
                         }
                         self.client = Some(addr);
                         self.socket = Some(sock.clone());
+                        self.is_connected = Arc::new(RwLock::new(true));
                         println!("[STUN] Hole with {} successfully broken!", addr);
                         return Ok(());
                     }
@@ -120,11 +137,17 @@ impl Tunnel {
                 }
             }
         }
-
+        self.is_connected = Arc::new(RwLock::new(false));
         if self.client.is_none() {
-            return Err(format!("[STUN] Failed to establish connection with {}:{}", ip, port));
+            return Err(format!(
+                "[STUN] Failed to establish connection with {}:{}",
+                ip, port
+            ));
         }
-        Err(format!("[STUN] Failed to establish connection with {}:{}", ip, port))
+        Err(format!(
+            "[STUN] Failed to establish connection with {}:{}",
+            ip, port
+        ))
     }
 
     pub fn backlife_cycle(&self, freq: u64) {
@@ -153,9 +176,20 @@ impl Tunnel {
         }
     }
 
-    fn handle_received_data(data: &[u8], reply_addr: SocketAddr, client: SocketAddr, sock: Arc<UdpSocket>) {
+    fn handle_received_data(
+        data: &[u8],
+        reply_addr: SocketAddr,
+        client: SocketAddr,
+        sock: Arc<UdpSocket>,
+    ) {
         let protocol = &data[..3];
-        println!("[STUN] {}: Received {} from {}: {:?}", client.ip(), str::from_utf8(protocol).unwrap(), reply_addr, data);
+        println!(
+            "[STUN] {}: Received {} from {}: {:?}",
+            client.ip(),
+            str::from_utf8(protocol).unwrap(),
+            reply_addr,
+            data
+        );
 
         if protocol == b"KPL" {
             return;
@@ -164,7 +198,11 @@ impl Tunnel {
             println!("[STUN] Message from {}: {}", client.ip(), message.text);
         } else if protocol == b"FIL" {
             let file_message: FileMessage = serde_json::from_slice(&data[3..]).unwrap();
-            println!("[STUN] Received file {} from {}", file_message.filename, client.ip());
+            println!(
+                "[STUN] Received file {} from {}",
+                file_message.filename,
+                client.ip()
+            );
             task::block_on(Self::save_file(&file_message.filename, &file_message.data));
         }
     }
@@ -182,7 +220,7 @@ impl Tunnel {
             .await
             .unwrap();
     }
-    
+
     async fn save_file(filename: &str, data: &[u8]) {
         let path = format!("./received_files/{}", filename);
         if let Err(e) = fs::create_dir_all("./received_files").await {
@@ -219,5 +257,17 @@ impl Tunnel {
             .send_to(&[b"FIL", &file_message_bytes[..]].concat(), client)
             .await
             .unwrap();
+    }
+
+    pub fn get_public_ip(&self) -> String {
+        self.public_ip.clone()
+    }
+
+    pub fn get_public_port(&self) -> u16 {
+        self.public_port
+    }
+
+    pub async fn is_connected(&self) -> bool {
+        *self.is_connected.read().await
     }
 }

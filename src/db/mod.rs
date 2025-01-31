@@ -1,3 +1,3 @@
 mod db;
 
-pub use db::P2PDatabase;
+pub use db::{P2PDatabase, Storage, Fragment};
