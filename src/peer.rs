@@ -8,11 +8,12 @@ use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
+use colored::*;
 
 use crate::config::Config;
 use crate::connection::Connection;
 use crate::db::{Fragment, P2PDatabase, Storage};
-use crate::signal::{Protocol, SignalClient, TransportPacket};
+use crate::signal::{Protocol, SignalClient, Status, TransportPacket};
 use crate::tunnel::Tunnel;
 use crate::ui::print_all_files;
 use crate::GLOBAL_DB;
@@ -43,9 +44,9 @@ async fn console_manager(
     if trimmed_input == "files" {
         print_all_files();
     } else if is_connected {
-        if trimmed_input.starts_with("file ") {
+        if (trimmed_input.starts_with("file ")) {
             let file_path = trimmed_input.strip_prefix("file ").unwrap();
-            println!("[Peer] Sending file: {}", file_path);
+            println!("{}", format!("[Peer] Sending file: {}", file_path).cyan());
             tunnel.lock().await.send_file_path(file_path).await;
         } else {
             tunnel.lock().await.send_message(trimmed_input).await;
@@ -67,13 +68,13 @@ async fn console_manager(
                         protocol: Protocol::TURN,
                     };
                     if let Err(e) = connection.send_packet(packet).await {
-                        println!("[Peer] Failed to send packet: {}", e);
+                        println!("{}", format!("[Peer] Failed to send packet: {}", e).red());
                     } else {
-                        println!("[Peer] Packet sent successfully");
+                        println!("{}", "[Peer] Packet sent successfully".green());
                     }
                 } else if trimmed_input.starts_with("file ") {
                     let file_path = trimmed_input.strip_prefix("file ").unwrap();
-                    println!("[Peer] Sending file: {}", file_path);
+                    println!("{}", format!("[Peer] Sending file: {}", file_path).cyan());
                     if let Ok(mut file) = File::open(file_path).await {
                         let mut contents = vec![];
                         file.read_to_end(&mut contents).await.unwrap();
@@ -84,19 +85,19 @@ async fn console_manager(
                             data: Some(json!({
                                     "filename": file_path,
                                     "contents": base64::encode(contents),
-                                    "peer_id": GLOBAL_DB.get_peer_id()
+                                    "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap()
                             })),
                             session_key: None,
                             status: None,
                             protocol: Protocol::TURN,
                         };
                         if let Err(e) = connection.send_packet(packet).await {
-                            println!("[Peer] Failed to send packet: {}", e);
+                            println!("{}", format!("[Peer] Failed to send packet: {}", e).red());
                         } else {
-                            println!("[Peer] Packet sent successfully");
+                            println!("{}", "[Peer] Packet sent successfully".green());
                         }
                     } else {
-                        println!("[Peer] Failed to open file: {}", file_path);
+                        println!("{}", format!("[Peer] Failed to open file: {}", file_path).red());
                     }
                 } else {
                     let packet = TransportPacket {
@@ -109,9 +110,9 @@ async fn console_manager(
                         protocol: Protocol::TURN,
                     };
                     if let Err(e) = connection.send_packet(packet).await {
-                        println!("[Peer] Failed to send packet: {}", e);
+                        println!("{}", format!("[Peer] Failed to send packet: {}", e).red());
                     } else {
-                        println!("[Peer] Packet sent successfully");
+                        println!("{}", "[Peer] Packet sent successfully".green());
                     }
                 }
             }
@@ -126,9 +127,13 @@ pub async fn run_peer(db: &P2PDatabase) {
     {
         let tunnel_guard = tunnel.lock().await;
         println!(
-            "[Peer] You public ip:port: {}:{}",
-            tunnel_guard.get_public_ip(),
-            tunnel_guard.get_public_port()
+            "{}",
+            format!(
+                "[Peer] You public ip:port: {}:{}",
+                tunnel_guard.get_public_ip(),
+                tunnel_guard.get_public_port()
+            )
+            .yellow()
         );
     }
 
@@ -155,8 +160,8 @@ pub async fn run_peer(db: &P2PDatabase) {
     let connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    let peer_id = db.get_peer_id();
-    println!("[Peer] Your UUID: {}", peer_id);
+    let peer_id = db.get_or_create_peer_id().unwrap();
+    println!("{}", format!("[Peer] Your UUID: {}", peer_id).yellow());
 
     tokio::spawn({
         let tunnel = Arc::clone(&tunnel);
@@ -172,19 +177,20 @@ pub async fn run_peer(db: &P2PDatabase) {
     let connections_turn_clone = Arc::clone(&connections_turn);
 
     loop {
+        println!("{}", "[Peer] Start ait new packets...".yellow());
         let result = connection.get_response().await;
         match result {
             Ok(packet) => {
-                println!("[Peer] Received packet: {:?}", packet);
+                println!("{}", format!("[Peer] Received packet: {:?}", packet).yellow());
                 let from_public_addr = packet.public_addr.clone();
                 let packet_clone = packet.clone();
                 let protocol_connection = packet.protocol.clone();
                 if protocol_connection == Protocol::STUN && packet.act == "wait_connection" {
-                    println!("[Peer] Start stun tunnel");
+                    println!("{}", "[Peer] Start stun tunnel".yellow());
                     let result_tunnel = stun_tunnel(packet, Arc::clone(&tunnel)).await;
                     match result_tunnel {
                         Ok(_) => {
-                            println!("[STUN] Connection established!");
+                            println!("{}", "[STUN] Connection established!".green());
                         }
                         Err(e) => {
                             connections_turn_clone.write().await.insert(
@@ -194,7 +200,7 @@ pub async fn run_peer(db: &P2PDatabase) {
                                     turn_connection: true,
                                 },
                             );
-                            println!("[Peer] Failed to establish connection: {}", e);
+                            println!("{}", format!("[Peer] Failed to establish connection: {}", e).red());
                         }
                     }
                 } else if protocol_connection == Protocol::TURN && packet.act == "wait_connection" {
@@ -212,11 +218,11 @@ pub async fn run_peer(db: &P2PDatabase) {
                         let result_turn_tunnel =
                             turn_tunnel(packet_clone, Arc::clone(&tunnel), &connection).await;
                         tokio::time::sleep(Duration::from_millis(100)).await;
-                        println!("[Peer] Result turn tunnel {:?}", result_turn_tunnel);
+                        println!("{}", format!("[Peer] Result turn tunnel {:?}", result_turn_tunnel).yellow());
                         match result_turn_tunnel {
                             Ok(r) => {
                                 if r == "successful_connection" {
-                                    println!("[TURN] Connection established!");
+                                    println!("{}", "[TURN] Connection established!".green());
                                     status.connected = true;
                                     status.turn_connection = false;
 
@@ -229,29 +235,31 @@ pub async fn run_peer(db: &P2PDatabase) {
                                         status: None,
                                         protocol: Protocol::TURN,
                                     };
-                                    println!("[Peer] Sending accept connection");
+                                    println!("{}", "[Peer] Sending accept connection".yellow());
                                     let _ = connection.send_packet(packet_hello).await;
                                 } else if r == "send_wait_connection" {
-                                    println!("[Peer] Wait answer acceptation connection...");
+                                    println!("{}", "[Peer] Wait answer acceptation connection...".yellow());
                                 }
                             }
                             Err(e) => {
                                 status.connected = false;
                                 status.turn_connection = true;
-                                println!("[Peer] Fail: {}", e);
+                                println!("{}", format!("[Peer] Fail: {}", e).red());
                             }
                         }
-                        println!("[Peer] Wait new packets...");
+                        println!("{}", "[Peer] Wait new packets...".yellow());
                     } else {
                         let packet_file_clone = packet_clone.clone();
                         if packet_clone.act == "save_file" {
                             let data = packet_file_clone.data.unwrap();
-                            let session_key =
-                                db.generate_and_store_secret_key(data["peer_id"].as_str().unwrap());
+                            let session_key = db
+                                .generate_and_store_secret_key(data["peer_id"].as_str().unwrap())
+                                .unwrap();
+
                             let filename = data["filename"].as_str().unwrap();
                             let contents =
                                 base64::decode(data["contents"].as_str().unwrap()).unwrap();
-                            let dir_path = format!("{}/files", GLOBAL_DB.path.to_str().unwrap());
+                            let dir_path: String = format!("{}/files", GLOBAL_DB.path.as_str());
                             if !std::path::Path::new(&dir_path).exists() {
                                 tokio::fs::create_dir_all(&dir_path).await.unwrap();
                             }
@@ -262,11 +270,11 @@ pub async fn run_peer(db: &P2PDatabase) {
                             GLOBAL_DB.add_storage_fragment(Storage {
                                 filename: filename.to_string(),
                                 session_key: session_key.clone(),
-                                session: session_key.clone(),
+                                session: session_key.clone().to_string().to_string(),
                                 uuid_peer: data["peer_id"].as_str().unwrap().to_string(),
                             });
 
-                            println!("[Peer] File saved");
+                            println!("{}", "[Peer] File saved".green());
 
                             //send feedback -> file saved and return session key
                             let packet_feedback = TransportPacket {
@@ -275,8 +283,8 @@ pub async fn run_peer(db: &P2PDatabase) {
                                 to: Some(from_public_addr.clone()),
                                 data: Some(json!({
                                     "filename": filename,
-                                    "session_key": session_key,
-                                    "peer_id": GLOBAL_DB.get_peer_id()
+                                    "session_key": session_key.clone(),
+                                    "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap()
                                 })),
                                 session_key: None,
                                 status: None,
@@ -284,41 +292,83 @@ pub async fn run_peer(db: &P2PDatabase) {
                             };
 
                             if let Err(e) = connection.send_packet(packet_feedback).await {
-                                println!("[Peer] Failed to send packet: {}", e);
+                                println!("{}", format!("[Peer] Failed to send packet: {}", e).red());
                             } else {
-                                println!("[Peer] Packet sent successfully");
+                                println!("{}", "[Peer] Packet sent successfully".green());
                             }
-                        }
-
-                        if packet_clone.act == "file_saved" {
+                        } else if packet_clone.act == "file_saved" {
                             let data = packet_clone.data.unwrap();
                             let filename = data["filename"].as_str().unwrap();
                             let session_key = data["session_key"].as_str().unwrap();
                             let peer_id = data["peer_id"].as_str().unwrap();
 
                             // uuid_peer: (), session_key: (), session: (), fragment: ()
-                            GLOBAL_DB.add_myfile_fragment(
-                                filename,
-                                Fragment {
-                                    uuid_peer: peer_id.to_string(),
-                                    session_key: session_key.to_string(),
-                                    session: session_key.to_string(),
-                                    filename: filename.to_string(),
-                                },
-                            );
+                            GLOBAL_DB.add_myfile_fragment(Fragment {
+                                uuid_peer: peer_id.to_string(),
+                                session_key: session_key.to_string(),
+                                session: session_key.to_string(),
+                                filename: filename.to_string(),
+                            });
 
                             println!(
-                                "\x1b[32m[Peer] File saved. Session key: {}\x1b[0m",
-                                session_key
+                                "{}",
+                                format!("\x1b[32m[Peer] File saved. Session key: {}\x1b[0m", session_key).green()
                             );
+                        } else if packet_clone.act == "get_file" {
+                            println!("{}", "Get file packet".yellow());
+                            let data = packet_file_clone.data.unwrap();
+                            let session_key = data["session_key"].as_str().unwrap();
+                            let contents = GLOBAL_DB.get_storage_fragments_by_key(session_key);
+                            for fragment in contents.unwrap() {
+                                let dir_path = format!("{}/files", GLOBAL_DB.path.as_str());
+                                let path = format!("{}/{}", dir_path, fragment.filename);
+                                let mut file = File::open(path).await.unwrap();
+                                let mut contents = vec![];
+                                file.read_to_end(&mut contents).await.unwrap();
+                                let packet_file = TransportPacket {
+                                    public_addr: my_public_addr.clone(),
+                                    act: "file".to_string(),
+                                    to: Some(from_public_addr.clone()),
+                                    data: Some(json!({
+                                        "filename": fragment.filename,
+                                        "contents": base64::encode(contents),
+                                    })),
+                                    session_key: None,
+                                    status: Some(Status::SUCCESS),
+                                    protocol: Protocol::TURN,
+                                };
+                                println!("{}", format!("[Peer] Sending file: {}", fragment.filename).cyan());
+                                if let Err(e) = connection.send_packet(packet_file).await {
+                                    println!("{}", format!("[Peer] Failed to send packet: {}", e).red());
+                                } else {
+                                    println!("{}", "[Peer] Packet sent successfully".green());
+                                }    
+                            }
+                        } else if packet_clone.act == "file" {
+                            let data = packet_file_clone.data.unwrap();
+                            let filename = data["filename"].as_str().unwrap();
+                            let contents = data["contents"].as_str().unwrap();
+                            let dir_path: String = format!("{}/recive_files", GLOBAL_DB.path.as_str());
+                            if !std::path::Path::new(&dir_path).exists() {
+                                tokio::fs::create_dir_all(&dir_path).await.unwrap();
+                            }
+                            let path = format!("{}/{}", dir_path, filename);
+                            let mut file = File::create(path).await.unwrap();
+                            let contents = base64::decode(contents).unwrap();
+                            file.write_all(&contents).await.unwrap();
+                            println!("{}", format!("[Peer] File saved: {}", filename).green());
+                        } else if packet_clone.act == "message" {
+                            let data = packet_clone.data.unwrap();
+                            let message = data["text"].as_str().unwrap();
+                            println!("{}", format!("[Peer] Message: {}", message).green());
                         }
                     }
                 } else {
-                    println!("[Peer] [Turn] Connection not found");
+                    println!("{}", "[Peer] [Turn] Connection not found".red());
                 }
             }
             Err(e) => {
-                println!("[Peer] Error: {}", e);
+                println!("{}", format!("[Peer] Error: {}", e).red());
                 break;
             }
         }
@@ -334,8 +384,8 @@ pub async fn turn_tunnel(
     let public_ip = tunnel_clone.public_ip.clone();
     let public_port = tunnel_clone.public_port.clone();
     println!(
-        "[TURN] Turn tunnel creating, sending packets.. {}",
-        packet.act
+        "{}",
+        format!("[TURN] Turn tunnel creating, sending packets.. {}", packet.act).yellow()
     );
     if packet.act == "wait_connection" {
         let packet_hello = TransportPacket {
@@ -349,8 +399,8 @@ pub async fn turn_tunnel(
         };
         let result = signal.send_packet(packet_hello).await;
         println!(
-            "[TURN] [try_turn_connection] Result sending socket {:?}",
-            result
+            "{}",
+            format!("[TURN] [try_turn_connection] Result sending socket {:?}", result).yellow()
         );
         match result {
             Ok(_) => {
@@ -370,7 +420,7 @@ pub async fn turn_tunnel(
             status: None,
             protocol: Protocol::TURN,
         };
-        println!("[TURN] [accept_connection] Sending accept connection");
+        println!("{}", "[TURN] [accept_connection] Sending accept connection".yellow());
         let result = signal.send_packet(packet_hello).await;
         match result {
             Ok(_) => {
@@ -389,17 +439,17 @@ pub async fn stun_tunnel(
     tunnel: Arc<Mutex<Tunnel>>,
 ) -> Result<(), String> {
     println!(
-        "[STUN] Entering stun_tunnel with public address: {:?}",
-        packet.public_addr
+        "{}",
+        format!("[STUN] Entering stun_tunnel with public address: {:?}", packet.public_addr).yellow()
     );
     match SignalClient::extract_addr(packet.public_addr).await {
         Ok((ip, port)) => {
             let ip = ip.to_string();
             let mut tunnel = tunnel.lock().await;
-            println!("[STUN] Try connecting to {}:{}", ip, port);
+            println!("{}", format!("[STUN] Try connecting to {}:{}", ip, port).yellow());
             match tunnel.make_connection(&ip, port, 3).await {
                 Ok(()) => {
-                    println!("[STUN] Connection established with {}:{}!", ip, port);
+                    println!("{}", format!("[STUN] Connection established with {}:{}!", ip, port).green());
                     tunnel.backlife_cycle(1);
 
                     loop {
@@ -409,7 +459,7 @@ pub async fn stun_tunnel(
 
                         if trimmed_input.starts_with("file ") {
                             let file_path = trimmed_input.strip_prefix("file ").unwrap();
-                            println!("[STUN] Sending file: {}", file_path);
+                            println!("{}", format!("[STUN] Sending file: {}", file_path).cyan());
                             tunnel.send_file_path(file_path).await;
                         } else {
                             tunnel.send_message(trimmed_input).await;
@@ -417,13 +467,13 @@ pub async fn stun_tunnel(
                     }
                 }
                 Err(e) => {
-                    println!("[STUN] Failed to make connection: {}", e);
+                    println!("{}", format!("[STUN] Failed to make connection: {}", e).red());
                     return Err("[STUN] Fail connection".to_string());
                 }
             }
         }
         Err(e) => {
-            println!("[STUN] Failed to extract address: {}", e);
+            println!("{}", format!("[STUN] Failed to extract address: {}", e).red());
             return Err("[STUN] Fail extract address".to_string());
         }
     }
