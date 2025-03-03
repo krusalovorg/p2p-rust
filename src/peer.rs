@@ -267,7 +267,7 @@ pub async fn run_peer(db: &P2PDatabase) {
                             let mut file = File::create(path).await.unwrap();
                             file.write_all(&contents).await.unwrap();
 
-                            GLOBAL_DB.add_storage_fragment(Storage {
+                            let _ = GLOBAL_DB.add_storage_fragment(Storage {
                                 filename: filename.to_string(),
                                 session_key: session_key.clone(),
                                 session: session_key.clone().to_string().to_string(),
@@ -303,7 +303,7 @@ pub async fn run_peer(db: &P2PDatabase) {
                             let peer_id = data["peer_id"].as_str().unwrap();
 
                             // uuid_peer: (), session_key: (), session: (), fragment: ()
-                            GLOBAL_DB.add_myfile_fragment(Fragment {
+                            let _ = GLOBAL_DB.add_myfile_fragment(Fragment {
                                 uuid_peer: peer_id.to_string(),
                                 session_key: session_key.to_string(),
                                 session: session_key.to_string(),
