@@ -8,6 +8,7 @@ pub struct InfoPeer {
     pub wait_connection: RwLock<bool>,
     pub public_addr: RwLock<String>,
     pub local_addr: String,
+    pub uuid: RwLock<Option<String>>,
 }
 
 #[derive(Debug)]
@@ -27,59 +28,79 @@ impl Peer {
                 wait_connection: RwLock::new(false),
                 public_addr: RwLock::new("".to_string()),
                 local_addr: socket.peer_addr().unwrap().to_string(),
+                uuid: RwLock::new(None),
             });
         }
 
-        let (reader, writer) = split(socket); // Разделяем поток
+        let (reader, writer) = split(socket);
         let reader = Arc::new(RwLock::new(reader));
         let writer = Arc::new(RwLock::new(writer));
-        let (tx, mut rx) = mpsc::channel(100); // Создаем канал
+        let (tx, _) = mpsc::channel(100); // Оставляем канал для совместимости с существующим кодом
 
-        let peer = Arc::new(Self {
-            reader: reader.clone(),
-            writer: writer.clone(),
+        Arc::new(Self {
+            reader,
+            writer,
             info: info.unwrap(),
             tx,
-        });
-
-        // Запускаем задачу для обработки отправки сообщений
-        let peer_clone = peer.clone();
-        tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
-                if let Err(e) = peer_clone.writer.write().await.write_all(message.as_bytes()).await {
-                    println!("Failed to send message to peer {}: {}", peer_clone.info.local_addr, e);
-                } else {
-                    println!("[SendData] Message sent to peer {}: {}", peer_clone.info.local_addr, message);
-                }
-            }
-        });
-
-        peer
+        })
     }
 
     pub async fn send_data(&self, message: &str) {
-        if let Err(e) = self.tx.send(message.to_string()).await {
+        let message_len = message.len() as u32;
+        let len_bytes = message_len.to_be_bytes();
+        
+        let mut writer = self.writer.write().await;
+        
+        // Отправляем длину сообщения (4 байта)
+        if let Err(e) = writer.write_all(&len_bytes).await {
+            println!("Failed to send message length to peer {}: {}", self.info.local_addr, e);
+            return;
+        }
+        
+        // Отправляем само сообщение
+        if let Err(e) = writer.write_all(message.as_bytes()).await {
             println!("Failed to send message to peer {}: {}", self.info.local_addr, e);
+        } else {
+            println!("[SendData] Message sent to peer {}: {}", self.info.local_addr, message);
         }
     }
 
     pub async fn receive_message(&self) -> Result<String, String> {
-        let mut buf = [0; 1024];
-        let n = match self.reader.write().await.read(&mut buf).await {
-            Ok(0) => {
-                println!("Peer {} disconnected", self.info.local_addr);
-                return Err("Peer disconnected".to_string());
-            }
-            Ok(n) => n,
+        let mut reader = self.reader.write().await;
+        
+        // Читаем длину сообщения (4 байта)
+        let mut len_bytes = [0u8; 4];
+        match reader.read_exact(&mut len_bytes).await {
+            Ok(_) => {},
             Err(e) => {
-                println!("Error reading from peer {}: {}", self.info.local_addr, e);
+                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                    println!("Peer {} disconnected", self.info.local_addr);
+                    return Err("Peer disconnected".to_string());
+                }
+                println!("Error reading message length from peer {}: {}", self.info.local_addr, e);
                 return Err(e.to_string());
             }
-        };
+        }
+        
+        let message_len = u32::from_be_bytes(len_bytes) as usize;
+        
+        // Читаем само сообщение
+        let mut message_bytes = vec![0u8; message_len];
+        match reader.read_exact(&mut message_bytes).await {
+            Ok(_) => {},
+            Err(e) => {
+                println!("Error reading message from peer {}: {}", self.info.local_addr, e);
+                return Err(e.to_string());
+            }
+        }
 
-        let message = String::from_utf8_lossy(&buf[..n]).to_string();
-
-        return Ok(message);
+        match String::from_utf8(message_bytes) {
+            Ok(message) => Ok(message),
+            Err(e) => {
+                println!("Error converting message to string from peer {}: {}", self.info.local_addr, e);
+                Err(e.to_string())
+            }
+        }
     }
 
     pub async fn set_wait_connection(&self, wait_connection_new: bool) {
@@ -90,6 +111,11 @@ impl Peer {
     pub async fn set_public_addr(&self, public_addr: String) {
         let mut public_addr_now = self.info.public_addr.write().await;
         *public_addr_now = public_addr;
+    }
+
+    pub async fn set_uuid(&self, uuid: String) {
+        let mut current_uuid = self.info.uuid.write().await;
+        *current_uuid = Some(uuid);
     }
 
     pub async fn send(&self, packet: String) -> Result<(), String> {

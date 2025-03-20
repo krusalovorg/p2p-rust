@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::packets::PeerInfo;
 use crate::signal::{Protocol, TransportPacket};
 use crate::GLOBAL_DB;
 use anyhow::Result;
@@ -50,12 +51,15 @@ impl SignalClient {
                 self.writer = Some(Arc::new(RwLock::new(writer)));
                 self.reader = Some(Arc::new(RwLock::new(reader)));
 
+                let peer_info = serde_json::to_value(PeerInfo {
+                    peer_id: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+                }).unwrap();
+
                 let connect_packet = TransportPacket {
                     public_addr: format!("{}:{}", public_ip, public_port),
                     act: "info".to_string(),
                     to: None,
-                    data: Some(serde_json::json!({ "peer_uuid": &GLOBAL_DB.get_or_create_peer_id().unwrap() })), // Добавляем UUID в пакет
-                    session_key: None,
+                    data: Some(peer_info),
                     status: None,
                     protocol: Protocol::SIGNAL,
                 };

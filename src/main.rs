@@ -10,21 +10,29 @@ mod tunnel;
 mod db;
 mod peer;
 mod ui;
+mod packets;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;
 use crate::peer::run_peer;
 use crate::ui::print_all_files;
 
+fn create_command() -> Command {
+    Command::new("P2P Server")
+        .arg(Arg::new("signal")
+            .long("signal")
+            .action(clap::ArgAction::SetTrue)
+            .help("Run as signal server"))
+        .arg(Arg::new("db-path")
+            .long("db-path")
+            .action(clap::ArgAction::Set)
+            .value_name("FILE")
+            .help("Path to the database directory"))
+}
+
 lazy_static! {
     pub static ref GLOBAL_DB: P2PDatabase = {
-        let matches = Command::new("P2P Server")
-            .arg(Arg::new("db-path")
-                .long("db-path")
-                .action(clap::ArgAction::Set)
-                .value_name("FILE")
-                .help("Path to the database directory"))
-            .get_matches();
+        let matches = create_command().get_matches();
 
         let db_path = matches.get_one::<String>("db-path")
             .map(|s| s.as_str())
@@ -38,22 +46,9 @@ lazy_static! {
     };
 }
 
-
 #[tokio::main]
 async fn main() {
-    let matches = Command::new("P2P Server")
-        .arg(Arg::new("signal")
-            .long("signal")
-            .action(clap::ArgAction::SetTrue)
-            .help("Run as signal server"))
-        .arg(Arg::new("db-path")
-            .long("db-path")
-            .action(clap::ArgAction::Set)
-            .value_name("FILE")
-            .help("Path to the database directory"))
-        .get_matches();
-
-    let db = &*GLOBAL_DB;
+    let matches = create_command().get_matches();
 
     print_all_files();
 
@@ -61,6 +56,6 @@ async fn main() {
         let signal_server = SignalServer::new();
         signal_server.run().await;
     } else {
-        run_peer(db).await;
+        run_peer().await;
     }
 }

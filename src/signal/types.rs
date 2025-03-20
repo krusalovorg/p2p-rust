@@ -17,7 +17,6 @@ pub struct TransportPacket {
     pub act: String, //info, answer, wait_connection,
     pub to: Option<String>, //кому отправляем данный пакет
     pub data: Option<serde_json::Value>,
-    pub session_key: Option<String>,
     pub status: Option<Status>, // success, falied
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
 }
