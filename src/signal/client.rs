@@ -1,12 +1,11 @@
-use crate::config::Config;
 use crate::packets::PeerInfo;
-use crate::signal::{Protocol, TransportPacket};
+use crate::packets::{Protocol, TransportPacket};
 use crate::GLOBAL_DB;
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite, split};
+use tokio::io::{AsyncWriteExt, split};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex, RwLock, RwLockWriteGuard};
+use tokio::sync::{mpsc, RwLock};
 
 #[derive(Debug)]
 struct Peer {

@@ -73,7 +73,7 @@ impl Peer {
         match reader.read_exact(&mut len_bytes).await {
             Ok(_) => {},
             Err(e) => {
-                if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                if e.kind() == std::io::ErrorKind::ConnectionReset {
                     println!("Peer {} disconnected", self.info.local_addr);
                     return Err("Peer disconnected".to_string());
                 }

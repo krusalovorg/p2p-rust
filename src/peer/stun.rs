@@ -2,7 +2,8 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use colored::*;
-use crate::signal::{SignalClient, TransportPacket};
+use crate::packets::TransportPacket;
+use crate::signal::SignalClient;
 use crate::tunnel::Tunnel;
 
 pub async fn stun_tunnel(

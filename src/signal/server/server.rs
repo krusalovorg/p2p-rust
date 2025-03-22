@@ -6,24 +6,30 @@ use tokio::sync::{mpsc, RwLock};
 
 use super::Peer;
 use crate::config::Config;
-use crate::signal::{Protocol, TransportPacket};
+use crate::packets::{Protocol, SyncPeerInfo, SyncPeerInfoData, TransportPacket};
+use crate::tunnel::Tunnel;
 
 #[derive(Debug)]
 pub struct SignalServer {
     pub peers: RwLock<Vec<Arc<Peer>>>,
     port: i64,
+    ip: String,
     message_tx: mpsc::Sender<(Arc<Peer>, String)>,
 }
 
 impl SignalServer {
-    pub fn new() -> Arc<Self> {
+    pub async fn new() -> Arc<Self> {
         let config: Config = Config::from_file("config.toml");
         let (message_tx, mut message_rx) = mpsc::channel(100);
+
+        let tunnel = Tunnel::new().await;
+        let public_ip = tunnel.get_public_ip();
 
         let server = SignalServer {
             peers: RwLock::new(Vec::new()),
             port: config.signal_server_port,
             message_tx,
+            ip: public_ip,
         };
 
         let server_arc = Arc::new(server);
@@ -73,6 +79,7 @@ impl SignalServer {
                         peer.info.local_addr, e
                     );
                     if e == "Peer disconnected" {
+                        self.remove_peer(&peer).await;
                         break;
                     }
                     continue;
@@ -83,6 +90,64 @@ impl SignalServer {
             if let Err(e) = self.message_tx.send((peer.clone(), message)).await {
                 println!("[SignalServer] Failed to send message to handler: {}", e);
             }
+        }
+    }
+
+    async fn remove_peer(self: Arc<Self>, peer: &Arc<Peer>) -> bool {
+        let mut peers = self.peers.write().await;
+        let peer_index = peers.iter().position(|p| p.info.local_addr == peer.info.local_addr);
+        
+        if let Some(index) = peer_index {
+            peers.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn sync_peers(self: Arc<Self>, peer: Arc<Peer>) {
+        let peers_info: Vec<SyncPeerInfo> = {
+            let peers_guard = self.peers.read().await;
+            let mut peers_info = Vec::new();
+            for p in peers_guard.iter() {
+                let public_addr = p.info.public_addr.read().await.clone();
+                let uuid = p
+                    .info
+                    .uuid
+                    .read()
+                    .await
+                    .clone()
+                    .unwrap_or_else(|| "Not set".to_string());
+                peers_info.push(SyncPeerInfo {
+                    public_addr: public_addr,
+                    uuid: uuid,
+                });
+            }
+            peers_info
+        };
+
+        let peer_public_addr = peer.info.public_addr.read().await.clone();
+
+        let packet = TransportPacket {
+            public_addr: self.ip.clone(),
+            act: "peer_list".to_string(),
+            to: Some(peer_public_addr.clone()),
+            data: Some(json!(SyncPeerInfoData { peers: peers_info })),
+            status: None,
+            protocol: Protocol::SIGNAL,
+        };
+
+        let packet = serde_json::to_string(&packet).unwrap();
+        if let Err(e) = peer.send(packet).await {
+            println!(
+                "[SignalServer] Failed to send peer list to peer {}: {}",
+                peer_public_addr, e
+            );
+        } else {
+            println!(
+                "[SignalServer] Successfully sent peer list to peer {}",
+                peer_public_addr
+            );
         }
     }
 
@@ -126,6 +191,8 @@ impl SignalServer {
                 println!("[SignalServer] PEER UUID: Not set");
             }
             println!("[SignalServer] =================");
+
+            server.clone().sync_peers(peer.clone()).await;
         }
 
         match message.protocol {
@@ -136,7 +203,9 @@ impl SignalServer {
                         peer_public_addr
                     );
                     if let Some(data) = message.data {
-                        if let Some(target_peer_id) = data.get("connect_peer_id").and_then(|v| v.as_str()) {
+                        if let Some(target_peer_id) =
+                            data.get("connect_peer_id").and_then(|v| v.as_str())
+                        {
                             println!(
                                 "[SignalServer] Looking for peer with UUID: {}",
                                 target_peer_id
@@ -205,7 +274,34 @@ impl SignalServer {
                     }
                 }
             }
-            Protocol::SIGNAL => {}
+            Protocol::SIGNAL => {
+                if message.act == "peer_list" {
+                    server.clone().sync_peers(peer.clone()).await;
+                } else if message.protocol == Protocol::STUN && message.act == "wait_connection" {
+                    // Добавляем обработку массива peers
+                    if let Some(data) = &message.data {
+                        if let Some(peers) = data.get("peers").and_then(|v| v.as_array()) {
+                            println!("[SignalServer] Processing peers for wait_connection:");
+                            for peer in peers {
+                                if let Some(public_addr) =
+                                    peer.get("public_addr").and_then(|v| v.as_str())
+                                {
+                                    println!("  - Public Address: {}", public_addr);
+                                }
+                                if let Some(uuid) = peer.get("uuid").and_then(|v| v.as_str()) {
+                                    println!("    UUID: {}", uuid);
+                                }
+                            }
+                        } else {
+                            println!(
+                                "[SignalServer] No peers found in the data for wait_connection."
+                            );
+                        }
+                    } else {
+                        println!("[SignalServer] No data found in the packet for wait_connection.");
+                    }
+                }
+            }
         }
     }
 
@@ -275,8 +371,8 @@ impl SignalServer {
     async fn send_peer_info(peer: Arc<Peer>, public_addr: String) {
         let wait_packet = TransportPacket {
             public_addr: public_addr.clone(), //к кому будет пытаться подключиться пир
-            act: "wait_connection".to_string(),//TODO:было wait_connection
-            to: None, //кому отправляем данный пакет
+            act: "wait_connection".to_string(), //TODO:было wait_connection
+            to: None,                         //кому отправляем данный пакет
             data: None,
             status: None,
             protocol: Protocol::STUN,
@@ -299,64 +395,54 @@ impl SignalServer {
         }
     }
 
-    async fn wait_for_peers(self: Arc<Self>) {
-        println!("START WAITNG PEERS ");
-        // loop {
-        let peers_snapshot = {
-            let peers_guard = self.peers.read().await;
-            peers_guard.clone()
-        };
+    // async fn wait_for_peers(self: Arc<Self>) {
+    //     println!("START WAITNG PEERS ");
+    //     // loop {
+    //     let peers_snapshot = {
+    //         let peers_guard = self.peers.read().await;
+    //         peers_guard.clone()
+    //     };
 
-        let mut waiting_peers: Vec<Arc<Peer>> = Vec::new();
-        for peer in peers_snapshot.iter() {
-            if *peer.info.wait_connection.read().await {
-                waiting_peers.push(peer.clone());
-            }
-        }
+    //     let mut waiting_peers: Vec<Arc<Peer>> = Vec::new();
+    //     for peer in peers_snapshot.iter() {
+    //         if *peer.info.wait_connection.read().await {
+    //             waiting_peers.push(peer.clone());
+    //         }
+    //     }
 
-        if waiting_peers.len() % 2 == 0 && waiting_peers.len() > 0 {
-            println!("Found 2 peers, starting connection");
-            let first_peer = &waiting_peers[0];
-            let second_peer = &waiting_peers[1];
+    //     if waiting_peers.len() % 2 == 0 && waiting_peers.len() > 0 {
+    //         println!("Found 2 peers, starting connection");
+    //         let first_peer = &waiting_peers[0];
+    //         let second_peer = &waiting_peers[1];
 
-            let first_peer_public_addr = first_peer.info.public_addr.read().await.clone();
-            let second_peer_public_addr = second_peer.info.public_addr.read().await.clone();
+    //         let first_peer_public_addr = first_peer.info.public_addr.read().await.clone();
+    //         let second_peer_public_addr = second_peer.info.public_addr.read().await.clone();
 
-            {
-                println!(
-                    "[SignalServer] Sending packet to: {}",
-                    second_peer.info.local_addr
-                );
-                SignalServer::send_peer_info(second_peer.clone(), first_peer_public_addr).await;
-                println!(
-                    "[SignalServer] Sended packet to peer: {}",
-                    second_peer.info.local_addr
-                );
-            }
-            second_peer.set_wait_connection(false).await;
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            {
-                println!(
-                    "[SignalServer] Sending packet to: {}",
-                    first_peer.info.local_addr
-                );
-                SignalServer::send_peer_info(first_peer.clone(), second_peer_public_addr).await;
-                println!(
-                    "[SignalServer] Sended packet to peer: {}",
-                    first_peer.info.local_addr
-                );
-            }
-            first_peer.set_wait_connection(false).await;
-
-            // println!(
-            //     "Before sending: first_peer wait_connection = {}, second_peer wait_connection = {}",
-            //     *first_peer.info.wait_connection.read().await,
-            //     *second_peer.info.wait_connection.read().await,
-            // );
-
-            // tokio::time::sleep(Duration::from_secs(1)).await;
-            // break;
-        }
-        // }
-    }
+    //         {
+    //             println!(
+    //                 "[SignalServer] Sending packet to: {}",
+    //                 second_peer.info.local_addr
+    //             );
+    //             SignalServer::send_peer_info(second_peer.clone(), first_peer_public_addr).await;
+    //             println!(
+    //                 "[SignalServer] Sended packet to peer: {}",
+    //                 second_peer.info.local_addr
+    //             );
+    //         }
+    //         second_peer.set_wait_connection(false).await;
+    //         tokio::time::sleep(Duration::from_millis(500)).await;
+    //         {
+    //             println!(
+    //                 "[SignalServer] Sending packet to: {}",
+    //                 first_peer.info.local_addr
+    //             );
+    //             SignalServer::send_peer_info(first_peer.clone(), second_peer_public_addr).await;
+    //             println!(
+    //                 "[SignalServer] Sended packet to peer: {}",
+    //                 first_peer.info.local_addr
+    //             );
+    //         }
+    //         first_peer.set_wait_connection(false).await;
+    //     }
+    // }
 }

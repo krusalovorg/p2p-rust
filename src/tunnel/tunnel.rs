@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{str, thread};
 use stun_client::*;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 #[derive(Serialize, Deserialize)]
@@ -27,6 +28,7 @@ pub struct Tunnel {
     socket: Option<Arc<UdpSocket>>,
     client: Option<SocketAddr>,
     pub is_connected: Arc<RwLock<bool>>,
+    pub rx: mpsc::Receiver<Vec<u8>>, // Новый канал для сообщений
 }
 
 impl Tunnel {
@@ -34,6 +36,7 @@ impl Tunnel {
         let local_port = rand::thread_rng().gen_range(16000..65535);
         let (public_ip, public_port) = Self::stun(local_port).await;
         let mut is_connected = Arc::new(RwLock::new(false));
+        let (message_tx, message_rx) = mpsc::channel(16); // Новый канал
         Tunnel {
             local_port,
             public_ip,
@@ -41,6 +44,7 @@ impl Tunnel {
             socket: None,
             client: None,
             is_connected,
+            rx: message_rx,
         }
     }
 
@@ -165,13 +169,24 @@ impl Tunnel {
     }
 
     fn life_cycle(sock: Arc<UdpSocket>, client: SocketAddr, freq: u64) {
-        loop {
-            task::block_on(sock.send_to(b"KPL", client)).unwrap();
-            thread::sleep(Duration::from_secs_f64(1.0 / freq as f64));
+        println!("[STUN] Starting life cycle...");
+        let sock_clone = sock.clone();
+        let (message_tx, message_rx) = mpsc::channel(16); // Новый канал
 
+        // Запуск отдельной задачи для отправки KPL
+        thread::spawn(move || {
+            loop {
+                println!("[STUN] Sending keep-alive...");
+                task::block_on(sock_clone.send_to(b"KPL", client)).unwrap();
+                thread::sleep(Duration::from_secs_f64(1.0 / freq as f64));
+            }
+        });
+
+        // Основной цикл для обработки входящих данных
+        loop {
             let mut buf = vec![0u8; 9999];
             while let Ok((n, reply_addr)) = task::block_on(sock.recv_from(&mut buf)) {
-                Self::handle_received_data(&buf[..n], reply_addr, client, sock.clone());
+                Self::handle_received_data(&buf[..n], reply_addr, client, sock.clone(), message_tx.clone());
             }
         }
     }
@@ -181,6 +196,7 @@ impl Tunnel {
         reply_addr: SocketAddr,
         client: SocketAddr,
         sock: Arc<UdpSocket>,
+        message_tx: mpsc::Sender<Vec<u8>>, // Новый канал
     ) {
         let protocol = &data[..3];
         println!(
@@ -195,6 +211,7 @@ impl Tunnel {
             return;
         } else if protocol == b"MSG" {
             let message: Message = serde_json::from_slice(&data[3..]).unwrap();
+            let _ = message_tx.try_send(message.text.into_bytes()); // Отправляем сообщение
             println!("[STUN] Message from {}: {}", client.ip(), message.text);
         } else if protocol == b"FIL" {
             let file_message: FileMessage = serde_json::from_slice(&data[3..]).unwrap();

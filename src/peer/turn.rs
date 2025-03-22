@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 use colored::*;
 
 use crate::connection::Connection;
-use crate::signal::{Protocol, TransportPacket};
+use crate::packets::{Protocol, TransportPacket};
 use crate::tunnel::Tunnel;
 
 pub async fn turn_tunnel(

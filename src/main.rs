@@ -53,7 +53,7 @@ async fn main() {
     print_all_files();
 
     if matches.get_flag("signal") {
-        let signal_server = SignalServer::new();
+        let signal_server = SignalServer::new().await;
         signal_server.run().await;
     } else {
         run_peer().await;

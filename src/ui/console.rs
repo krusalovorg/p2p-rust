@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use colored::*;
 
-use crate::{signal::{Protocol, TransportPacket}, tunnel::Tunnel, GLOBAL_DB};
+use crate::{packets::{Protocol, TransportPacket}, tunnel::Tunnel, GLOBAL_DB};
 use crate::peer::ConnectionTurnStatus;
 
 pub fn print_all_files() {
@@ -76,11 +76,24 @@ pub async fn console_manager(
         print_all_files();
     } else if trimmed_input == "fragments" {
         print_all_fragments();
+    } else if trimmed_input == "peers" {
+        let packet: TransportPacket = TransportPacket {
+            public_addr: format!("{}:{}", public_ip, public_port),
+            act: "peer_list".to_string(),
+            to: None,
+            data: None,
+            status: None,
+            protocol: Protocol::SIGNAL,
+        };
+
+        if let Err(e) = connection.send_packet(packet).await {
+            println!("{}", format!("[Peer] Failed to send peer list request: {}", e).red());
+        }
     } else if trimmed_input.starts_with("connect ") {
         let peer_id = trimmed_input.strip_prefix("connect ").unwrap();
         println!("{}", format!("[Peer] Trying to connect to peer: {}", peer_id).cyan());
         
-        let packet = TransportPacket {
+        let packet: TransportPacket = TransportPacket {
             public_addr: format!("{}:{}", public_ip, public_port),
             act: "wait_connection".to_string(),
             to: None,
@@ -95,7 +108,6 @@ pub async fn console_manager(
         if let Err(e) = connection.send_packet(packet).await {
             println!("{}", format!("[Peer] Failed to send connection request: {}", e).red());
         } else {
-            println!("{}", "[Peer] Connection request sent successfully".green());
             println!("{}", "[Peer] Waiting for peer to accept connection...".yellow());
         }
     } else if is_connected {

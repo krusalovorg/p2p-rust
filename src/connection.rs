@@ -5,9 +5,9 @@ use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 
-use crate::signal::{Protocol, SignalClient, TransportPacket};
+use crate::packets::{Protocol, TransportPacket};
 use crate::GLOBAL_DB;
 
 #[derive(Debug)]
@@ -19,40 +19,13 @@ pub enum Message {
 }
 
 pub struct Connection {
-    tx: mpsc::Sender<Message>,
+    pub tx: mpsc::Sender<Message>,
+    pub rx: mpsc::Receiver<Vec<u8>>, // Новый канал для передачи сообщений
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
 }
 
 impl Connection {
-    async fn write_packet(
-        writer: &Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
-        packet: &TransportPacket,
-    ) -> Result<(), String> {
-        let packet_str = serde_json::to_string(&packet).unwrap();
-        let packet_len = packet_str.len() as u32;
-        let mut writer = writer.write().await;
-
-        // Отправляем длину сообщения (4 байта)
-        let len_bytes = packet_len.to_be_bytes();
-        if let Err(e) = writer.write_all(&len_bytes).await {
-            return Err(format!("Failed to send packet length: {}", e));
-        }
-
-        // Отправляем само сообщение
-        println!("[Connection] Writing packet to socket: {:?}", packet);
-        match writer.write_all(packet_str.as_bytes()).await {
-            Ok(_) => {
-                println!("[Connection] Packet sent successfully");
-                Ok(())
-            }
-            Err(e) => {
-                println!("[Connection] Failed to send packet: {}", e);
-                Err(e.to_string())
-            }
-        }
-    }
-
     pub async fn new(
         signal_server_ip: String,
         signal_server_port: i64,
@@ -60,6 +33,7 @@ impl Connection {
         tunnel_public_port: u16,
     ) -> Connection {
         let (tx, rx) = mpsc::channel(16);
+        let (message_tx, message_rx) = mpsc::channel(16); // Новый канал
 
         let stream = TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port))
             .await
@@ -90,18 +64,48 @@ impl Connection {
         task::spawn(Self::process_messages(
             tx.clone(),
             rx,
+            message_tx, // Передаем новый канал
             reader.clone(),
             writer.clone(),
             tunnel_public_ip,
             tunnel_public_port,
         ));
 
-        Connection { tx, writer, reader }
+        Connection { tx, rx: message_rx, writer, reader }
+    }
+    
+    async fn write_packet(
+        writer: &Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
+        packet: &TransportPacket,
+    ) -> Result<(), String> {
+        let packet_str = serde_json::to_string(&packet).unwrap();
+        let packet_len = packet_str.len() as u32;
+        let mut writer = writer.write().await;
+
+        // Отправляем длину сообщения (4 байта)
+        let len_bytes = packet_len.to_be_bytes();
+        if let Err(e) = writer.write_all(&len_bytes).await {
+            return Err(format!("Failed to send packet length: {}", e));
+        }
+
+        // Отправляем само сообщение
+        println!("[Connection] Writing packet to socket: {:?}", packet);
+        match writer.write_all(packet_str.as_bytes()).await {
+            Ok(_) => {
+                println!("[Connection] Packet sent successfully");
+                Ok(())
+            }
+            Err(e) => {
+                println!("[Connection] Failed to send packet: {}", e);
+                Err(e.to_string())
+            }
+        }
     }
 
     async fn process_messages(
         tx: mpsc::Sender<Message>,
         mut rx: mpsc::Receiver<Message>,
+        message_tx: mpsc::Sender<Vec<u8>>, // Новый канал
         reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
         writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
         tunnel_public_ip: String,
@@ -134,6 +138,7 @@ impl Connection {
                             continue;
                         }
                     };
+                    let _ = message_tx.send(response.data.unwrap_or_default().into_bytes()).await; // Отправляем сообщение
                     if let Err(e) = tx.send(response) {
                         println!("[Connection] Failed to send response to channel: {:?}", e);
                     }
@@ -169,6 +174,10 @@ impl Connection {
         // Читаем длину сообщения (4 байта)
         let mut len_bytes = [0u8; 4];
         if let Err(e) = reader.read_exact(&mut len_bytes).await {
+            if e.kind() == std::io::ErrorKind::ConnectionReset {
+                println!("[Connection] Connection reset by peer: {}", e);
+                return Err("Connection reset by peer".to_string());
+            }
             return Err(format!("Failed to read message length: {}", e));
         }
         let packet_len = u32::from_be_bytes(len_bytes) as usize;
@@ -176,6 +185,10 @@ impl Connection {
         // Читаем само сообщение
         let mut packet_bytes = vec![0u8; packet_len];
         if let Err(e) = reader.read_exact(&mut packet_bytes).await {
+            if e.kind() == std::io::ErrorKind::ConnectionReset {
+                println!("[Connection] Connection reset by peer: {}", e);
+                return Err("Connection reset by peer".to_string());
+            }
             return Err(format!("Failed to read message: {}", e));
         }
         
