@@ -1,4 +1,5 @@
 use clap::{Arg, Command};
+use peer::Peer;
 #[macro_use]
 extern crate lazy_static;
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ mod db;
 mod peer;
 mod ui;
 mod packets;
+mod manager;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;
@@ -56,6 +58,8 @@ async fn main() {
         let signal_server = SignalServer::new().await;
         signal_server.run().await;
     } else {
-        run_peer().await;
+        let peer = Peer::new().await;
+        peer.run().await;
+        // run_peer().await;
     }
 }

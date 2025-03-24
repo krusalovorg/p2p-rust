@@ -24,6 +24,7 @@ impl Config {
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::json;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -42,7 +43,8 @@ pub enum Message {
 }
 
 pub struct Connection {
-    tx: mpsc::Sender<Message>,
+    pub tx: mpsc::Sender<Message>,
+    pub rx: mpsc::Receiver<TransportPacket>, // Новый канал для передачи сообщений
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
 }
@@ -55,6 +57,7 @@ impl Connection {
         tunnel_public_port: u16,
     ) -> Connection {
         let (tx, rx) = mpsc::channel(16);
+        let (message_tx, message_rx) = mpsc::channel(16); // Новый канал
 
         let stream = TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port))
             .await
@@ -85,13 +88,14 @@ impl Connection {
         task::spawn(Self::process_messages(
             tx.clone(),
             rx,
+            message_tx, // Передаем новый канал
             reader.clone(),
             writer.clone(),
             tunnel_public_ip,
             tunnel_public_port,
         ));
 
-        Connection { tx, writer, reader }
+        Connection { tx, rx: message_rx, writer, reader }
     }
     
     async fn write_packet(
@@ -125,6 +129,7 @@ impl Connection {
     async fn process_messages(
         tx: mpsc::Sender<Message>,
         mut rx: mpsc::Receiver<Message>,
+        message_tx: mpsc::Sender<TransportPacket>, // Новый канал
         reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
         writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
         tunnel_public_ip: String,
@@ -157,9 +162,7 @@ impl Connection {
                             continue;
                         }
                     };
-                    if let Err(e) = tx.send(response) {
-                        println!("[Connection] Failed to send response to channel: {:?}", e);
-                    }
+                    let _ = message_tx.send(response).await; // Отправляем сообщение
                 }
             }
         }
@@ -240,6 +243,7 @@ impl Connection {
 
 === ./src\main.rs ===
 use clap::{Arg, Command};
+use peer::Peer;
 #[macro_use]
 extern crate lazy_static;
 use std::path::PathBuf;
@@ -297,7 +301,9 @@ async fn main() {
         let signal_server = SignalServer::new().await;
         signal_server.run().await;
     } else {
-        run_peer().await;
+        let peer = Peer::new().await;
+        peer.run().await;
+        // run_peer().await;
     }
 }
 
@@ -723,15 +729,146 @@ pub struct TransportPacket {
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
 }
 
+=== ./src\peer\ConnectionManager.rs ===
+use crate::connection::{Connection, Message};
+use crate::packets::TransportPacket;
+use crate::tunnel::Tunnel;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use colored::Colorize;
+
+enum ConnectionType {
+    Signal(String),
+    Stun,
+}
+
+pub struct ConnectionManager {
+    connections: Arc<Mutex<HashMap<String, Connection>>>, // signal + turn
+    tunnels: Arc<Mutex<HashMap<String, Tunnel>>>,         // stun
+    pub incoming_packet_rx: Arc<Mutex<mpsc::Receiver<(ConnectionType, TransportPacket)>>>,
+    incoming_packet_tx: mpsc::Sender<(ConnectionType, TransportPacket)>,
+}
+
+impl ConnectionManager {
+    pub fn new() -> Self {
+        let (incoming_packet_tx, incoming_packet_rx) = mpsc::channel(100);
+        ConnectionManager {
+            connections: Arc::new(Mutex::new(HashMap::new())),
+            tunnels: Arc::new(Mutex::new(HashMap::new())),
+            incoming_packet_rx: Arc::new(Mutex::new(incoming_packet_rx)),
+            incoming_packet_tx,
+        }
+    }
+    pub async fn send_signaling_message(
+        &self,
+        server_address: &str,
+        data: TransportPacket,
+    ) -> Result<(), String> {
+        let connections = self.connections.lock().await;
+        if let Some(conn) = connections.get(server_address) {
+            if let Err(e) = conn.tx.send(Message::SendData(data)).await {
+                return Err(format!(
+                    "Failed to send message to {}: {}",
+                    server_address, e
+                ));
+            }
+            Ok(())
+        } else {
+            Err(format!(
+                "Signaling connection to {} not found",
+                server_address
+            ))
+        }
+    }
+
+    pub async fn add_connection(&self, id: String, connection: Connection) {
+        let mut connections = self.connections.lock().await;
+        connections.insert(id, connection);
+    }
+
+    pub async fn add_tunnel(&self, id: String, tunnel: Tunnel) {
+        let mut tunnels = self.tunnels.lock().await;
+        tunnels.insert(id, tunnel);
+    }
+
+    pub async fn handle_incoming_packets(&self) {
+        let incoming_packet_rx = self.incoming_packet_rx.clone();
+        let mut rx = incoming_packet_rx.lock().await;
+
+        loop {
+            tokio::select! {
+                Some((connection_type, data)) = rx.recv() => {
+                    match connection_type {
+                        ConnectionType::Signal(addr) => {
+                            println!("Received signaling packet from {}: {:?}", addr, data);
+                            if let Err(e) = self.send_signaling_message(&addr, data).await {
+                                eprintln!("Error sending response to {}: {}", addr, e);
+                            }
+                        }
+                        ConnectionType::Stun => {
+                            println!("Received STUN related data: {:?}", data);
+                            let server_address = format!("{}:{}", "your_signal_server_ip", "your_signal_server_port");
+                            if let Err(e) = self.send_signaling_message(&server_address, data).await {
+                                eprintln!("Error sending STUN data to signaling server: {}", e);
+                            }
+                        }
+                    }
+                },
+                Some((id, message)) = self.receive_connection_message() => {
+                    println!("Received message from Connection {}: {:?}", id, message);
+                    // Обработка сообщения от Connection
+                },
+                Some((id, message)) = self.receive_tunnel_message() => {
+                    println!("Received message from Tunnel {}: {:?}", id, message);
+                    // Обработка сообщения от Tunnel
+                }
+            }
+        }
+    }
+
+    pub async fn receive_connection_message(&self) -> Option<(String, TransportPacket)> {
+        let mut connections = self.connections.lock().await;
+        for (id, connection) in connections.iter_mut() {
+            if let Ok(result) = connection.rx.try_recv() {
+                return Some((id.clone(), result));
+            }
+        }
+        None
+    }
+
+    pub async fn receive_tunnel_message(&self) -> Option<(String, TransportPacket)> {
+        let mut tunnels = self.tunnels.lock().await;
+        for (id, tunnel) in tunnels.iter_mut() {
+            if let Ok(result) = tunnel.rx.try_recv() {
+                return Some((id.clone(), result));
+            }
+        }
+        None
+    }
+
+    pub async fn handle_peer_packets(&self, packet: TransportPacket, my_public_addr: String) {
+        match packet.act.as_str() {
+            _ => {
+                println!("{}", format!("[Peer] Unknown action: {}", packet.act).red());
+            }
+        }
+    }
+}
+
+
 === ./src\peer\mod.rs ===
 mod stun;
 mod turn;
 mod peer;
 mod types;
+mod peer_2;
+mod ConnectionManager;
 
 pub use stun::stun_tunnel;
 pub use turn::turn_tunnel;
 pub use peer::run_peer;
+pub use peer_2::Peer;
 pub use types::ConnectionTurnStatus;
 
 === ./src\peer\peer.rs ===
@@ -1073,6 +1210,132 @@ pub async fn run_peer() {
             Err(e) => {
                 println!("{}", format!("[Peer] Error: {}", e).red());
                 break;
+            }
+        }
+    }
+}
+
+
+=== ./src\peer\peer_2.rs ===
+use async_std::sync::RwLock;
+use base64;
+use colored::*;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Mutex;
+
+use crate::config::Config;
+use crate::connection::Connection;
+use crate::db::{Fragment, Storage};
+use crate::packets::{
+    PeerFileSaved, PeerUploadFile, Protocol, Status, SyncPeerInfo, SyncPeerInfoData,
+    TransportPacket,
+};
+use crate::peer::ConnectionTurnStatus;
+use crate::peer::{stun_tunnel, turn_tunnel};
+use crate::tunnel::Tunnel;
+use crate::ui::console_manager;
+use crate::GLOBAL_DB;
+
+use super::ConnectionManager::ConnectionManager;
+
+pub struct Peer {
+    connection_manager: Arc<ConnectionManager>,
+    connection: Arc<Connection>,
+    tunnel: Arc<Mutex<Tunnel>>,
+    connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
+    my_public_addr: String,
+}
+
+impl Peer {
+    pub async fn new() -> Self {
+        let config: Config = Config::from_file("config.toml");
+        let tunnel = Arc::new(Mutex::new(Tunnel::new().await));
+        let connection_manager = Arc::new(ConnectionManager::new());
+
+        {
+            let tunnel_guard = tunnel.lock().await;
+            println!(
+                "{}",
+                format!(
+                    "[Peer] You public ip:port: {}:{}",
+                    tunnel_guard.get_public_ip(),
+                    tunnel_guard.get_public_port()
+                )
+                .yellow()
+            );
+        }
+
+        let (tunnel_public_ip, tunnel_public_port) = {
+            let tunnel_guard = tunnel.lock().await;
+            (tunnel_guard.get_public_ip(), tunnel_guard.get_public_port())
+        };
+
+        let my_public_addr = format!("{}:{}", tunnel_public_ip, tunnel_public_port);
+
+        let connection = Arc::new(
+            Connection::new(
+                config.signal_server_ip.clone(),
+                config.signal_server_port,
+                tunnel_public_ip,
+                tunnel_public_port,
+            )
+            .await,
+        );
+
+        let connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        connections_turn.write().await.insert(
+            format!("{}:{}", config.signal_server_ip, config.signal_server_port),
+            ConnectionTurnStatus {
+                connected: true,
+                turn_connection: true,
+            },
+        );
+
+        Peer {
+            connection_manager,
+            connection,
+            tunnel,
+            connections_turn,
+            my_public_addr,
+        }
+    }
+
+    pub async fn run(&self) {
+        let peer_id = GLOBAL_DB.get_or_create_peer_id().unwrap();
+        println!("{}", format!("[Peer] Your UUID: {}", peer_id).yellow());
+
+        tokio::spawn({
+            let tunnel = Arc::clone(&self.tunnel);
+            let connections_turn = Arc::clone(&self.connections_turn);
+            let connection = Arc::clone(&self.connection);
+            async move {
+                loop {
+                    console_manager(tunnel.clone(), connections_turn.clone(), connection.clone())
+                        .await;
+                }
+            }
+        });
+
+        loop {
+            println!("{}", "[Peer] Start wait new packets...".yellow());
+            let result = self.connection.get_response().await;
+            match result {
+                Ok(packet) => {
+                    println!("{}", format!("[Peer] Received packet: {:?}", packet).yellow());
+                    self.connection_manager
+                        .handle_peer_packets(packet, self.my_public_addr.clone())
+                        .await;
+                }
+                Err(e) => {
+                    println!("{}", format!("[Peer] Error: {}", e).red());
+                    break;
+                }
             }
         }
     }
@@ -1957,7 +2220,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{str, thread};
 use stun_client::*;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
+
+use crate::packets::TransportPacket;
 
 #[derive(Serialize, Deserialize)]
 struct Message {
@@ -1977,6 +2243,7 @@ pub struct Tunnel {
     socket: Option<Arc<UdpSocket>>,
     client: Option<SocketAddr>,
     pub is_connected: Arc<RwLock<bool>>,
+    pub rx: mpsc::Receiver<TransportPacket>, // Новый канал для сообщений
 }
 
 impl Tunnel {
@@ -1984,6 +2251,7 @@ impl Tunnel {
         let local_port = rand::thread_rng().gen_range(16000..65535);
         let (public_ip, public_port) = Self::stun(local_port).await;
         let mut is_connected = Arc::new(RwLock::new(false));
+        let (message_tx, message_rx) = mpsc::channel(16); // Новый канал
         Tunnel {
             local_port,
             public_ip,
@@ -1991,6 +2259,7 @@ impl Tunnel {
             socket: None,
             client: None,
             is_connected,
+            rx: message_rx,
         }
     }
 
@@ -2117,6 +2386,7 @@ impl Tunnel {
     fn life_cycle(sock: Arc<UdpSocket>, client: SocketAddr, freq: u64) {
         println!("[STUN] Starting life cycle...");
         let sock_clone = sock.clone();
+        let (message_tx, message_rx) = mpsc::channel(16); // Новый канал
 
         // Запуск отдельной задачи для отправки KPL
         thread::spawn(move || {
@@ -2131,7 +2401,7 @@ impl Tunnel {
         loop {
             let mut buf = vec![0u8; 9999];
             while let Ok((n, reply_addr)) = task::block_on(sock.recv_from(&mut buf)) {
-                Self::handle_received_data(&buf[..n], reply_addr, client, sock.clone());
+                Self::handle_received_data(&buf[..n], reply_addr, client, sock.clone(), message_tx.clone());
             }
         }
     }
@@ -2141,6 +2411,7 @@ impl Tunnel {
         reply_addr: SocketAddr,
         client: SocketAddr,
         sock: Arc<UdpSocket>,
+        message_tx: mpsc::Sender<Vec<u8>>, // Новый канал
     ) {
         let protocol = &data[..3];
         println!(
@@ -2164,6 +2435,10 @@ impl Tunnel {
                 client.ip()
             );
             task::block_on(Self::save_file(&file_message.filename, &file_message.data));
+        }
+
+        if (protocol != b"KPL") {
+            let _ = message_tx.try_send(data.to_vec()); // Отправляем сообщение
         }
     }
 

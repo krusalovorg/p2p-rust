@@ -61,6 +61,7 @@ impl SignalClient {
                     data: Some(peer_info),
                     status: None,
                     protocol: Protocol::SIGNAL,
+                    uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
                 };
 
                 let connect_packet = serde_json::to_string(&connect_packet).unwrap();

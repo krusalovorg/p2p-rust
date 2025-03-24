@@ -18,9 +18,9 @@ pub enum Message {
     },
 }
 
+#[derive(Clone)]
 pub struct Connection {
     pub tx: mpsc::Sender<Message>,
-    pub rx: mpsc::Receiver<Vec<u8>>, // Новый канал для передачи сообщений
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
 }
@@ -33,7 +33,6 @@ impl Connection {
         tunnel_public_port: u16,
     ) -> Connection {
         let (tx, rx) = mpsc::channel(16);
-        let (message_tx, message_rx) = mpsc::channel(16); // Новый канал
 
         let stream = TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port))
             .await
@@ -53,6 +52,7 @@ impl Connection {
             ),
             status: None,
             protocol: Protocol::SIGNAL,
+            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
         };
 
         if let Err(e) = Self::write_packet(&writer, &connect_packet).await {
@@ -64,14 +64,13 @@ impl Connection {
         task::spawn(Self::process_messages(
             tx.clone(),
             rx,
-            message_tx, // Передаем новый канал
             reader.clone(),
             writer.clone(),
             tunnel_public_ip,
             tunnel_public_port,
         ));
 
-        Connection { tx, rx: message_rx, writer, reader }
+        Connection { tx, writer, reader }
     }
     
     async fn write_packet(
@@ -105,7 +104,6 @@ impl Connection {
     async fn process_messages(
         tx: mpsc::Sender<Message>,
         mut rx: mpsc::Receiver<Message>,
-        message_tx: mpsc::Sender<Vec<u8>>, // Новый канал
         reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
         writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
         tunnel_public_ip: String,
@@ -138,7 +136,6 @@ impl Connection {
                             continue;
                         }
                     };
-                    let _ = message_tx.send(response.data.unwrap_or_default().into_bytes()).await; // Отправляем сообщение
                     if let Err(e) = tx.send(response) {
                         println!("[Connection] Failed to send response to channel: {:?}", e);
                     }
@@ -161,6 +158,7 @@ impl Connection {
             ),
             status: None,
             protocol: Protocol::STUN,
+            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
         };
 
         Self::write_packet(writer, &connect_packet).await

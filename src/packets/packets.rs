@@ -62,4 +62,5 @@ pub struct TransportPacket {
     pub data: Option<serde_json::Value>,
     pub status: Option<Status>, // success, falied
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
+    pub uuid: String
 }

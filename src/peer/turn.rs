@@ -6,27 +6,27 @@ use colored::*;
 use crate::connection::Connection;
 use crate::packets::{Protocol, TransportPacket};
 use crate::tunnel::Tunnel;
+use crate::GLOBAL_DB;
 
 pub async fn turn_tunnel(
     packet: TransportPacket,
-    tunnel: Arc<Mutex<Tunnel>>,
+    my_public_addr: Arc<String>,
     signal: &Connection,
 ) -> Result<String, String> {
-    let tunnel_clone = tunnel.lock().await;
-    let public_ip = tunnel_clone.public_ip.clone();
-    let public_port = tunnel_clone.public_port.clone();
+
     println!(
         "{}",
         format!("[TURN] Turn tunnel creating, sending packets.. {}", packet.act).yellow()
     );
     if packet.act == "wait_connection" {
         let packet_hello = TransportPacket {
-            public_addr: format!("{}:{}", public_ip, public_port),
+            public_addr: my_public_addr.clone().to_string(),
             act: "try_turn_connection".to_string(),
             to: Some(packet.public_addr.clone().to_string()),
             data: None,
             status: None,
             protocol: Protocol::TURN,
+            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
         };
         let result = signal.send_packet(packet_hello).await;
         println!(
@@ -43,12 +43,13 @@ pub async fn turn_tunnel(
         }
     } else if packet.act == "accept_connection" || packet.act == "try_turn_connection" {
         let packet_hello = TransportPacket {
-            public_addr: format!("{}:{}", public_ip, public_port),
+            public_addr: my_public_addr.clone().to_string(),
             act: "accept_connection".to_string(),
             to: Some(packet.public_addr.to_string()),
             data: None,
             status: None,
             protocol: Protocol::TURN,
+            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
         };
         println!("{}", "[TURN] [accept_connection] Sending accept connection".yellow());
         let result = signal.send_packet(packet_hello).await;

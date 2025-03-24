@@ -1,4 +1,3 @@
-use async_std::sync::RwLock;
 use base64;
 use colored::*;
 use std::collections::HashMap;
@@ -6,16 +5,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex,RwLock};
 
 use crate::config::Config;
 use crate::connection::Connection;
 use crate::db::{Fragment, Storage};
 use crate::packets::{
-    PeerFileSaved, PeerUploadFile, Protocol, Status, SyncPeerInfo, SyncPeerInfoData,
+    PeerFileSaved, PeerUploadFile, Protocol, Status, SyncPeerInfoData,
     TransportPacket,
 };
-use crate::peer::ConnectionTurnStatus;
+use crate::manager::ConnectionTurnStatus;
 use crate::peer::{stun_tunnel, turn_tunnel};
 use crate::tunnel::Tunnel;
 use crate::ui::console_manager;
@@ -72,13 +71,15 @@ pub async fn run_peer() {
     let peer_id = GLOBAL_DB.get_or_create_peer_id().unwrap();
     println!("{}", format!("[Peer] Your UUID: {}", peer_id).yellow());
 
+    let my_public_addr_clone = Arc::new(my_public_addr.to_string()).clone();
+
     tokio::spawn({
         let tunnel = Arc::clone(&tunnel);
         let connections_turn = Arc::clone(&connections_turn);
         let connection = Arc::clone(&connection);
         async move {
             loop {
-                console_manager(tunnel.clone(), connections_turn.clone(), connection.clone()).await;
+                console_manager(my_public_addr_clone.clone(), connections_turn.clone(), connection.clone()).await;
             }
         }
     });
@@ -157,7 +158,7 @@ pub async fn run_peer() {
                     // println!("[Peer] [Turn] Status {:?}", status);
                     if status.turn_connection && !status.connected {
                         let result_turn_tunnel =
-                            turn_tunnel(packet_clone, Arc::clone(&tunnel), &connection).await;
+                            turn_tunnel(packet_clone, Arc::new(my_public_addr.clone().to_string()), &connection).await;
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         println!(
                             "{}",
@@ -177,6 +178,7 @@ pub async fn run_peer() {
                                         data: None,
                                         status: None,
                                         protocol: Protocol::TURN,
+                                        uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
                                     };
                                     println!("{}", "[Peer] Sending accept connection".yellow());
                                     let _ = connection.send_packet(packet_hello).await;
@@ -238,6 +240,7 @@ pub async fn run_peer() {
                                 ),
                                 status: None,
                                 protocol: Protocol::TURN,
+                                uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
                             };
 
                             if let Err(e) = connection.send_packet(packet_feedback).await {
@@ -294,6 +297,7 @@ pub async fn run_peer() {
                                     data: Some(peer_upload_file),
                                     status: Some(Status::SUCCESS),
                                     protocol: Protocol::TURN,
+                                    uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
                                 };
                                 println!(
                                     "{}",

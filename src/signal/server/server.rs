@@ -8,6 +8,7 @@ use super::Peer;
 use crate::config::Config;
 use crate::packets::{Protocol, SyncPeerInfo, SyncPeerInfoData, TransportPacket};
 use crate::tunnel::Tunnel;
+use crate::GLOBAL_DB;
 
 #[derive(Debug)]
 pub struct SignalServer {
@@ -15,6 +16,7 @@ pub struct SignalServer {
     port: i64,
     ip: String,
     message_tx: mpsc::Sender<(Arc<Peer>, String)>,
+    my_public_addr: Arc<String>,
 }
 
 impl SignalServer {
@@ -24,12 +26,14 @@ impl SignalServer {
 
         let tunnel = Tunnel::new().await;
         let public_ip = tunnel.get_public_ip();
+        let my_public_addr = Arc::new(format!("{}:{}", public_ip, config.signal_server_port));
 
         let server = SignalServer {
             peers: RwLock::new(Vec::new()),
             port: config.signal_server_port,
             message_tx,
             ip: public_ip,
+            my_public_addr
         };
 
         let server_arc = Arc::new(server);
@@ -95,8 +99,10 @@ impl SignalServer {
 
     async fn remove_peer(self: Arc<Self>, peer: &Arc<Peer>) -> bool {
         let mut peers = self.peers.write().await;
-        let peer_index = peers.iter().position(|p| p.info.local_addr == peer.info.local_addr);
-        
+        let peer_index = peers
+            .iter()
+            .position(|p| p.info.local_addr == peer.info.local_addr);
+
         if let Some(index) = peer_index {
             peers.remove(index);
             true
@@ -129,12 +135,13 @@ impl SignalServer {
         let peer_public_addr = peer.info.public_addr.read().await.clone();
 
         let packet = TransportPacket {
-            public_addr: self.ip.clone(),
+            public_addr: self.my_public_addr.clone().to_string(),
             act: "peer_list".to_string(),
             to: Some(peer_public_addr.clone()),
             data: Some(json!(SyncPeerInfoData { peers: peers_info })),
             status: None,
             protocol: Protocol::SIGNAL,
+            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
         };
 
         let packet = serde_json::to_string(&packet).unwrap();
@@ -243,6 +250,7 @@ impl SignalServer {
                     let peers_guard = server.peers.read().await;
                     for item in peers_guard.iter() {
                         if Some(item.info.public_addr.read().await.to_string()) == Some(to.clone())
+                            || *item.info.uuid.read().await == Some(to.clone())
                         {
                             println!(
                                 "[SignalServer] Send turn packet: {} {:?}",
@@ -256,6 +264,7 @@ impl SignalServer {
                                 data: message.data.clone(),
                                 status: message.status.clone(),
                                 protocol: Protocol::TURN,
+                                uuid: message.uuid.to_string(),
                             };
                             let turn_packet = serde_json::to_string(&turn_packet).unwrap();
                             if let Err(e) = item.send(turn_packet).await {
@@ -316,7 +325,7 @@ impl SignalServer {
                 "[SignalServer] Sending packet to: {}",
                 second_peer.info.local_addr
             );
-            SignalServer::send_peer_info(second_peer.clone(), first_peer_public_addr).await;
+            SignalServer::send_peer_info(second_peer.clone(), first_peer.clone(), first_peer_public_addr).await;
             println!(
                 "[SignalServer] Sent packet to peer: {}",
                 second_peer.info.local_addr
@@ -329,7 +338,7 @@ impl SignalServer {
                 "[SignalServer] Sending packet to: {}",
                 first_peer.info.local_addr
             );
-            SignalServer::send_peer_info(first_peer.clone(), second_peer_public_addr).await;
+            SignalServer::send_peer_info(first_peer.clone(), second_peer.clone(), second_peer_public_addr).await;
             println!(
                 "[SignalServer] Sent packet to peer: {}",
                 first_peer.info.local_addr
@@ -368,7 +377,7 @@ impl SignalServer {
         return Ok(peer_res.clone().unwrap());
     }
 
-    async fn send_peer_info(peer: Arc<Peer>, public_addr: String) {
+    async fn send_peer_info(to_peer: Arc<Peer>, about_peer: Arc<Peer>, public_addr: String) {
         let wait_packet = TransportPacket {
             public_addr: public_addr.clone(), //к кому будет пытаться подключиться пир
             act: "wait_connection".to_string(), //TODO:было wait_connection
@@ -376,19 +385,20 @@ impl SignalServer {
             data: None,
             status: None,
             protocol: Protocol::STUN,
+            uuid: about_peer.info.uuid.read().await.clone().unwrap(),
         };
         let wait_packet = serde_json::to_string(&wait_packet).unwrap();
 
         println!(
             "[SignalServer] Sending wait packet to peer: {}",
-            peer.info.local_addr
+            to_peer.info.local_addr
         );
-        let result = peer.send(wait_packet).await;
+        let result = to_peer.send(wait_packet).await;
 
         match result {
             Ok(_) => println!(
                 "[SignalServer] Successfully sent packet to peer: {}. Peer connect to: {}",
-                peer.info.public_addr.read().await,
+                to_peer.info.public_addr.read().await,
                 public_addr
             ),
             Err(e) => println!("[SignalServer] Failed to send peer to peer info: {}", e),

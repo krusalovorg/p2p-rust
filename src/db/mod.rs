@@ -1,11 +1,11 @@
 mod db;
-mod dht_ops;
 mod models;
-mod myfiles_ops;
-mod peer_ops;
-mod secret_keys_ops;
-mod storage_ops;
 mod tables;
+mod peer;
+mod secret_keys;
+mod storage;
+mod myfiles;
+mod dht;
 
 pub use db::P2PDatabase;
 pub use models::{DHTEntry, Fragment, SecretKeyInfo, Storage};
