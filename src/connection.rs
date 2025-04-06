@@ -8,6 +8,7 @@ use tokio::task;
 use tokio::time::sleep;
 
 use crate::packets::{Protocol, TransportPacket};
+use crate::peer::peer_api::PeerAPI;
 use crate::GLOBAL_DB;
 
 #[derive(Debug)]

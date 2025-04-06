@@ -1,6 +1,7 @@
 use crate::connection::{Connection, Message};
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::TransportPacket;
+use crate::peer::peer_api::PeerAPI;
 use crate::tunnel::Tunnel;
 use crate::ui::console_manager;
 use std::collections::HashMap;
@@ -84,14 +85,17 @@ impl ConnectionManager {
         let connection_clone_for_response = connection.clone();
         
         let my_public_addr_clone = self.my_public_addr.clone();
+        let my_public_addr_clone_for_api = my_public_addr_clone.clone();
+
+        let api = PeerAPI::new(connection.clone(), my_public_addr_clone_for_api);
+        let api_clone = api.clone();
 
         tokio::spawn({
             async move {
                 loop {
                     console_manager(
-                        my_public_addr_clone.clone(),
+                        Arc::new(api_clone.clone()),
                         connections_turn_clone.clone(),
-                        connection_clone_for_console.clone(),
                     )
                     .await;
                 }

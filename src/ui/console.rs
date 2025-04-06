@@ -9,15 +9,13 @@ use crate::manager::ConnectionTurnStatus;
 use crate::packets::PeerUploadFile;
 use std::io::{self, Write};
 use std::sync::Arc;
-
 use colored::*;
-
+use crate::peer::peer_api::PeerAPI;
 use crate::{packets::{Protocol, TransportPacket}, GLOBAL_DB};
 
 pub fn print_all_files() {
     let myfiles = GLOBAL_DB.get_myfile_fragments();
     
-    //UUID Peer
     let uuid_peer = GLOBAL_DB.get_or_create_peer_id().unwrap();
     println!("{}", format!("[Peer] UUID: {}", uuid_peer).yellow());
 
@@ -68,11 +66,9 @@ pub fn print_all_commands() {
     println!("{}", "  help - Show available commands");
 }
 
-// Console manager for use send files use tunnel class or connection class (stun or turn protocol)
 pub async fn console_manager(
-    my_public_addr: Arc<String>,
+    api: Arc<PeerAPI>,
     connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
-    connection: Arc<Connection>,
 ) {
     let mut input = String::new();
     print!("\x1b[32m[P2P] >\x1b[0m ");
@@ -87,38 +83,15 @@ pub async fn console_manager(
     } else if trimmed_input == "fragments" {
         print_all_fragments();
     } else if trimmed_input == "peers" {
-        let packet: TransportPacket = TransportPacket {
-            public_addr: my_public_addr.clone().to_string(),
-            act: "peer_list".to_string(),
-            to: None,
-            data: None,
-            status: None,
-            protocol: Protocol::SIGNAL,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-        };
-
-        if let Err(e) = connection.send_packet(packet).await {
-            println!("{}", format!("[Peer] Failed to send peer list request: {}", e).red());
+        if let Err(e) = api.request_peer_list().await {
+            println!("{}", format!("[Peer] Failed to request peer list: {}", e).red());
         }
     } else if trimmed_input.starts_with("connect ") {
         let peer_id = trimmed_input.strip_prefix("connect ").unwrap();
         println!("{}", format!("[Peer] Trying to connect to peer: {}", peer_id).cyan());
         
-        let packet: TransportPacket = TransportPacket {
-            public_addr: my_public_addr.clone().to_string(),
-            act: "wait_connection".to_string(),
-            to: None,
-            data: Some(json!({
-                "connect_peer_id": peer_id,
-                "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap()
-            })),
-            status: None,
-            protocol: Protocol::STUN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-        };
-
-        if let Err(e) = connection.send_packet(packet).await {
-            println!("{}", format!("[Peer] Failed to send connection request: {}", e).red());
+        if let Err(e) = api.connect_to_peer(peer_id.to_string()).await {
+            println!("{}", format!("[Peer] Failed to connect to peer: {}", e).red());
         } else {
             println!("{}", "[Peer] Waiting for peer to accept connection...".yellow());
         }
@@ -127,66 +100,24 @@ pub async fn console_manager(
         for (key, connection_turn_status) in connections_turn_clone.iter() {
             if connection_turn_status.connected && !connection_turn_status.turn_connection {
                 if trimmed_input.starts_with("get ") {
-                    //send packet with get file by session key
                     let session_key = trimmed_input.strip_prefix("get ").unwrap();
-                    let packet = TransportPacket {
-                        public_addr: my_public_addr.clone().to_string(),
-                        act: "get_file".to_string(),
-                        to: Some(key.clone()),
-                        data: Some(json!({"session_key": session_key})),
-                        status: None,
-                        protocol: Protocol::TURN,
-                        uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                    };
-                    if let Err(e) = connection.send_packet(packet).await {
-                        println!("{}", format!("[Peer] Failed to send packet: {}", e).red());
+                    if let Err(e) = api.get_file(key.clone(), session_key.to_string()).await {
+                        println!("{}", format!("[Peer] Failed to get file: {}", e).red());
                     } else {
-                        println!("{}", "[Peer] Packet sent successfully".green());
+                        println!("{}", "[Peer] File request sent successfully".green());
                     }
                 } else if trimmed_input.starts_with("upload ") {
                     let file_path = trimmed_input.strip_prefix("upload ").unwrap();
-                    println!("{}", format!("[Peer] Uploading file: {}", file_path).cyan());
-                    if let Ok(mut file) = File::open(file_path).await {
-                        let mut contents = vec![];
-                        file.read_to_end(&mut contents).await.unwrap();
-
-                        let peer_upload_file = serde_json::to_value(PeerUploadFile {
-                            filename: file_path.to_string(),
-                            contents: base64::encode(contents),
-                            peer_id: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                        }).unwrap();
-
-                        let packet = TransportPacket {
-                            public_addr: my_public_addr.clone().to_string(),
-                            act: "save_file".to_string(),
-                            to: Some(key.clone()),
-                            data: Some(peer_upload_file),
-                            status: None,
-                            protocol: Protocol::TURN,
-                            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                        };
-                        if let Err(e) = connection.send_packet(packet).await {
-                            println!("{}", format!("[Peer] Failed to send packet: {}", e).red());
-                        } else {
-                            println!("{}", "[Peer] Packet sent successfully".green());
-                        }
+                    if let Err(e) = api.upload_file(key.clone(), file_path.to_string()).await {
+                        println!("{}", format!("[Peer] Failed to upload file: {}", e).red());
                     } else {
-                        println!("{}", format!("[Peer] Failed to open file: {}", file_path).red());
+                        println!("{}", "[Peer] File uploaded successfully".green());
                     }
                 } else {
-                    let packet = TransportPacket {
-                        public_addr: my_public_addr.clone().to_string(),
-                        act: "message".to_string(),
-                        to: Some(key.clone()),
-                        data: Some(json!({"text": trimmed_input.to_string()})),
-                        status: None,
-                        protocol: Protocol::TURN,
-                        uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                    };
-                    if let Err(e) = connection.send_packet(packet).await {
-                        println!("{}", format!("[Peer] Failed to send packet: {}", e).red());
+                    if let Err(e) = api.send_message(key.clone(), trimmed_input.to_string()).await {
+                        println!("{}", format!("[Peer] Failed to send message: {}", e).red());
                     } else {
-                        println!("{}", "[Peer] Packet sent successfully".green());
+                        println!("{}", "[Peer] Message sent successfully".green());
                     }
                 }
             }

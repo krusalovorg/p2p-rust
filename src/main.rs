@@ -16,7 +16,6 @@ mod manager;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;
-use crate::peer::run_peer;
 use crate::ui::print_all_files;
 
 fn create_command() -> Command {
