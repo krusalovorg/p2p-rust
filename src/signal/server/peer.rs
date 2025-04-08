@@ -3,15 +3,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, split}; // Добавляем split
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, mpsc}; // Добавляем mpsc
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InfoPeer {
-    pub wait_connection: RwLock<bool>,
-    pub public_addr: RwLock<String>,
+    pub wait_connection: Arc<RwLock<bool>>,
+    pub public_addr: Arc<RwLock<String>>,
     pub local_addr: String,
-    pub uuid: RwLock<Option<String>>,
+    pub uuid: Arc<RwLock<Option<String>>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Peer {
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>, // Добавляем reader
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>, // Добавляем writer
@@ -25,10 +25,10 @@ impl Peer {
 
         if info.is_none() {
             info = Some(InfoPeer {
-                wait_connection: RwLock::new(false),
-                public_addr: RwLock::new("".to_string()),
+                wait_connection: Arc::new(RwLock::new(false)),
+                public_addr: Arc::new(RwLock::new("".to_string())),
                 local_addr: socket.peer_addr().unwrap().to_string(),
-                uuid: RwLock::new(None),
+                uuid: Arc::new(RwLock::new(None)),
             });
         }
 

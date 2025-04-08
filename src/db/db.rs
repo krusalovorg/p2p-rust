@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use super::tables;
 
+#[derive(Clone, Debug)]
 pub struct P2PDatabase {
     pub db: Arc<Mutex<Database>>,
     pub path: String,

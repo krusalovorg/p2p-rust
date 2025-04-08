@@ -1,12 +1,13 @@
 use crate::connection::{Connection, Message};
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::TransportPacket;
-use crate::peer::peer_api::PeerAPI;
 use crate::tunnel::Tunnel;
 use crate::ui::console_manager;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
+use crate::peer::peer_api::PeerAPI;
+use crate::db::P2PDatabase;
 
 pub struct ConnectionManager {
     pub connections: Arc<Mutex<HashMap<String, Connection>>>,
@@ -19,10 +20,11 @@ pub struct ConnectionManager {
     pub connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
     pub base_tunnel: Arc<Mutex<Tunnel>>,
     pub my_public_addr: Arc<String>,
+    pub db: Arc<P2PDatabase>,
 }
 
 impl ConnectionManager {
-    pub async fn new() -> Self {
+    pub async fn new(db: &P2PDatabase) -> Self {
         let (incoming_packet_tx, incoming_packet_rx) = mpsc::channel(100);
 
         let connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>> =
@@ -42,6 +44,7 @@ impl ConnectionManager {
             connections_turn,
             base_tunnel: tunnel,
             my_public_addr,
+            db: Arc::new(db.clone()),
         }
     }
     pub async fn send_signaling_message(
@@ -80,15 +83,13 @@ impl ConnectionManager {
 
         let id_clone = id.clone();
         let connections_turn_clone = self.connections_turn.clone();
-
-        let connection_clone_for_console = connection.clone();
-        let connection_clone_for_response = connection.clone();
         
         let my_public_addr_clone = self.my_public_addr.clone();
         let my_public_addr_clone_for_api = my_public_addr_clone.clone();
 
-        let api = PeerAPI::new(connection.clone(), my_public_addr_clone_for_api);
+        let api = PeerAPI::new(connection.clone(), my_public_addr_clone_for_api, &self.db);
         let api_clone = api.clone();
+        let db_clone = self.db.clone();
 
         tokio::spawn({
             async move {
@@ -96,6 +97,7 @@ impl ConnectionManager {
                     console_manager(
                         Arc::new(api_clone.clone()),
                         connections_turn_clone.clone(),
+                        &db_clone,
                     )
                     .await;
                 }

@@ -2,19 +2,21 @@ use std::sync::Arc;
 use serde_json::json;
 use crate::connection::Connection;
 use crate::packets::{Protocol, TransportPacket};
-use crate::GLOBAL_DB;
+use crate::db::P2PDatabase;
 
 #[derive(Clone)]
 pub struct PeerAPI {
     connection: Arc<Connection>,
     my_public_addr: Arc<String>,
+    db: Arc<P2PDatabase>,
 }
 
 impl PeerAPI {
-    pub fn new(connection: Arc<Connection>, my_public_addr: Arc<String>) -> Self {
+    pub fn new(connection: Arc<Connection>, my_public_addr: Arc<String>, db: &P2PDatabase) -> Self {
         PeerAPI {
             connection,
             my_public_addr,
+            db: Arc::new(db.clone()),
         }
     }
 
@@ -26,7 +28,7 @@ impl PeerAPI {
             data: Some(json!({"session_key": session_key})),
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         self.connection.send_packet(packet).await
@@ -38,7 +40,7 @@ impl PeerAPI {
         let peer_upload_file = json!({
             "filename": file_path,
             "contents": base64::encode(contents),
-            "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            "peer_id": self.db.get_or_create_peer_id().unwrap(),
         });
 
         let packet = TransportPacket {
@@ -48,7 +50,7 @@ impl PeerAPI {
             data: Some(peer_upload_file),
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         self.connection.send_packet(packet).await
@@ -62,7 +64,7 @@ impl PeerAPI {
             data: Some(json!({"text": message})),
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         self.connection.send_packet(packet).await
@@ -75,11 +77,11 @@ impl PeerAPI {
             to: None,
             data: Some(json!({
                 "connect_peer_id": peer_id,
-                "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap()
+                "peer_id": self.db.get_or_create_peer_id().unwrap()
             })),
             status: None,
             protocol: Protocol::STUN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         self.connection.send_packet(packet).await
@@ -93,9 +95,9 @@ impl PeerAPI {
             data: None,
             status: None,
             protocol: Protocol::SIGNAL,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
-
+        println!("{}", format!("[Peer] Sending peer list to signal server"));
         self.connection.send_packet(packet).await
     }
 } 

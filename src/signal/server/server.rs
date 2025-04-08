@@ -8,7 +8,7 @@ use super::Peer;
 use crate::config::Config;
 use crate::packets::{Protocol, SyncPeerInfo, SyncPeerInfoData, TransportPacket};
 use crate::tunnel::Tunnel;
-use crate::GLOBAL_DB;
+use crate::db::P2PDatabase;
 
 #[derive(Debug)]
 pub struct SignalServer {
@@ -17,10 +17,11 @@ pub struct SignalServer {
     ip: String,
     message_tx: mpsc::Sender<(Arc<Peer>, String)>,
     my_public_addr: Arc<String>,
+    db: Arc<P2PDatabase>,
 }
 
 impl SignalServer {
-    pub async fn new() -> Arc<Self> {
+    pub async fn new(db: &P2PDatabase) -> Arc<Self> {
         let config: Config = Config::from_file("config.toml");
         let (message_tx, mut message_rx) = mpsc::channel(100);
 
@@ -33,7 +34,8 @@ impl SignalServer {
             port: config.signal_server_port,
             message_tx,
             ip: public_ip,
-            my_public_addr
+            my_public_addr,
+            db: Arc::new(db.clone()),
         };
 
         let server_arc = Arc::new(server);
@@ -141,7 +143,7 @@ impl SignalServer {
             data: Some(json!(SyncPeerInfoData { peers: peers_info })),
             status: None,
             protocol: Protocol::SIGNAL,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         let packet = serde_json::to_string(&packet).unwrap();

@@ -1,22 +1,16 @@
-use serde_json::json;
 use std::collections::HashMap;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
-use base64;
-use crate::connection::Connection;
 use crate::manager::ConnectionTurnStatus;
-use crate::packets::PeerUploadFile;
 use std::io::{self, Write};
 use std::sync::Arc;
 use colored::*;
 use crate::peer::peer_api::PeerAPI;
-use crate::{packets::{Protocol, TransportPacket}, GLOBAL_DB};
+use crate::db::P2PDatabase;
 
-pub fn print_all_files() {
-    let myfiles = GLOBAL_DB.get_myfile_fragments();
+pub fn print_all_files(db: &P2PDatabase) {
+    let myfiles = db.get_myfile_fragments();
     
-    let uuid_peer = GLOBAL_DB.get_or_create_peer_id().unwrap();
+    let uuid_peer = db.get_or_create_peer_id().unwrap();
     println!("{}", format!("[Peer] UUID: {}", uuid_peer).yellow());
 
     match myfiles {
@@ -34,8 +28,8 @@ pub fn print_all_files() {
     }
 }
 
-pub fn print_all_fragments() {
-    let fragments = GLOBAL_DB.get_storage_fragments();
+pub fn print_all_fragments(db: &P2PDatabase) {
+    let fragments = db.get_storage_fragments();
 
     match fragments {
         Ok(fragments) => {
@@ -69,6 +63,7 @@ pub fn print_all_commands() {
 pub async fn console_manager(
     api: Arc<PeerAPI>,
     connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
+    db: &P2PDatabase,
 ) {
     let mut input = String::new();
     print!("\x1b[32m[P2P] >\x1b[0m ");
@@ -79,9 +74,9 @@ pub async fn console_manager(
     if trimmed_input == "help" {
         print_all_commands();
     } else if trimmed_input == "files" {
-        print_all_files();
+        print_all_files(db);
     } else if trimmed_input == "fragments" {
-        print_all_fragments();
+        print_all_fragments(db);
     } else if trimmed_input == "peers" {
         if let Err(e) = api.request_peer_list().await {
             println!("{}", format!("[Peer] Failed to request peer list: {}", e).red());

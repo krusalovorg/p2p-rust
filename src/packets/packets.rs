@@ -64,3 +64,13 @@ pub struct TransportPacket {
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
     pub uuid: String
 }
+
+impl std::fmt::Display for TransportPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "TransportPacket {{ public_addr: {}, act: {}, to: {:?}, protocol: {:?}, uuid: {} }}",
+            self.public_addr, self.act, self.to, self.protocol, self.uuid
+        )
+    }
+}

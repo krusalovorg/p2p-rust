@@ -1,16 +1,15 @@
+use super::ConnectionManager::ConnectionManager;
 use crate::db::{Fragment, Storage};
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::{
     PeerFileSaved, PeerUploadFile, Protocol, Status, SyncPeerInfoData, TransportPacket,
 };
 use crate::peer::turn_tunnel;
-use crate::GLOBAL_DB;
 use colored::Colorize;
 use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use tokio::io::AsyncReadExt;
-use super::ConnectionManager::ConnectionManager;
+use tokio::io::AsyncWriteExt;
 
 impl ConnectionManager {
     pub async fn handle_incoming_packets(&self) {
@@ -60,7 +59,14 @@ impl ConnectionManager {
                             } else if protocol_connection == Protocol::STUN
                                 && packet.act == "wait_connection"
                             {
-                                println!("{}", format!("[Peer] [Stun] From public address: {}", from_public_addr).yellow());
+                                println!(
+                                    "{}",
+                                    format!(
+                                        "[Peer] [Stun] From public address: {}",
+                                        from_public_addr
+                                    )
+                                    .yellow()
+                                );
                                 println!("{}", "[Peer] Start stun tunnel".yellow());
                                 let result_tunnel = self.stun_tunnel(packet).await;
                                 match result_tunnel {
@@ -77,10 +83,11 @@ impl ConnectionManager {
                                         );
                                         println!(
                                             "{}",
-                                            format!("[Peer] Failed to establish connection: {}", e).red()
+                                            format!("[Peer] Failed to establish connection: {}", e)
+                                                .red()
                                         );
                                     }
-                                }            
+                                }
                             } else if protocol_connection == Protocol::TURN
                                 && packet.act == "wait_connection"
                             {
@@ -93,18 +100,20 @@ impl ConnectionManager {
                                 );
                             }
                             //println from_public_addr
-                            println!("{}", format!("[Peer] From public address: {}", from_public_addr).yellow());
-                            if let Some(status) = self
-                                .connections_turn
-                                .write()
-                                .await
-                                .get_mut(&from_uuid)
+                            println!(
+                                "{}",
+                                format!("[Peer] From public address: {}", from_public_addr)
+                                    .yellow()
+                            );
+                            if let Some(status) =
+                                self.connections_turn.write().await.get_mut(&from_uuid)
                             {
                                 if status.turn_connection && !status.connected {
                                     let result_turn_tunnel = turn_tunnel(
                                         packet_clone,
                                         self.my_public_addr.clone(),
                                         &connection,
+                                        &self.db,
                                     )
                                     .await;
                                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -133,7 +142,7 @@ impl ConnectionManager {
                                                     data: None,
                                                     status: None,
                                                     protocol: Protocol::TURN,
-                                                    uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+                                                    uuid: self.db.get_or_create_peer_id().unwrap(),
                                                 };
                                                 println!(
                                                     "{}",
@@ -159,7 +168,8 @@ impl ConnectionManager {
                                     let packet_file_clone = packet_clone.clone();
                                     if packet_clone.act == "save_file" {
                                         let data = packet_file_clone.data.unwrap();
-                                        let session_key = GLOBAL_DB
+                                        let session_key = self
+                                            .db
                                             .generate_and_store_secret_key(
                                                 data["peer_id"].as_str().unwrap(),
                                             )
@@ -170,7 +180,7 @@ impl ConnectionManager {
                                             base64::decode(data["contents"].as_str().unwrap())
                                                 .unwrap();
                                         let dir_path: String =
-                                            format!("{}/files", GLOBAL_DB.path.as_str());
+                                            format!("{}/files", self.db.path.as_str());
                                         if !std::path::Path::new(&dir_path).exists() {
                                             tokio::fs::create_dir_all(&dir_path).await.unwrap();
                                         }
@@ -178,12 +188,13 @@ impl ConnectionManager {
                                         let mut file = File::create(path).await.unwrap();
                                         file.write_all(&contents).await.unwrap();
 
-                                        let _ = GLOBAL_DB.add_storage_fragment(Storage {
+                                        let _ = self.db.add_storage_fragment(Storage {
                                             filename: filename.to_string(),
                                             session_key: session_key.clone(),
                                             session: session_key.clone().to_string().to_string(),
                                             owner_id: data["peer_id"].as_str().unwrap().to_string(),
-                                            storage_peer_id: GLOBAL_DB
+                                            storage_peer_id: self
+                                                .db
                                                 .get_or_create_peer_id()
                                                 .unwrap(),
                                         });
@@ -198,7 +209,8 @@ impl ConnectionManager {
                                                 serde_json::to_value(PeerFileSaved {
                                                     filename: filename.to_string(),
                                                     session_key: session_key.clone(),
-                                                    peer_id: GLOBAL_DB
+                                                    peer_id: self
+                                                        .db
                                                         .get_or_create_peer_id()
                                                         .unwrap(),
                                                 })
@@ -206,7 +218,7 @@ impl ConnectionManager {
                                             ),
                                             status: None,
                                             protocol: Protocol::TURN,
-                                            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+                                            uuid: self.db.get_or_create_peer_id().unwrap(),
                                         };
 
                                         if let Err(e) =
@@ -224,7 +236,7 @@ impl ConnectionManager {
                                         let session_key = data["session_key"].as_str().unwrap();
                                         let peer_id = data["peer_id"].as_str().unwrap();
 
-                                        let _ = GLOBAL_DB.add_myfile_fragment(Fragment {
+                                        let _ = self.db.add_myfile_fragment(Fragment {
                                             uuid_peer: peer_id.to_string(),
                                             session_key: session_key.to_string(),
                                             session: session_key.to_string(),
@@ -244,10 +256,10 @@ impl ConnectionManager {
                                         let data = packet_file_clone.data.unwrap();
                                         let session_key = data["session_key"].as_str().unwrap();
                                         let contents =
-                                            GLOBAL_DB.get_storage_fragments_by_key(session_key);
+                                            self.db.get_storage_fragments_by_key(session_key);
                                         for fragment in contents.unwrap() {
                                             let dir_path =
-                                                format!("{}/files", GLOBAL_DB.path.as_str());
+                                                format!("{}/files", self.db.path.as_str());
                                             let path =
                                                 format!("{}/{}", dir_path, fragment.filename);
                                             let mut file = File::open(path).await.unwrap();
@@ -258,7 +270,8 @@ impl ConnectionManager {
                                                 serde_json::to_value(PeerUploadFile {
                                                     filename: fragment.filename.clone(),
                                                     contents: base64::encode(contents),
-                                                    peer_id: GLOBAL_DB
+                                                    peer_id: self
+                                                        .db
                                                         .get_or_create_peer_id()
                                                         .unwrap(),
                                                 })
@@ -271,7 +284,7 @@ impl ConnectionManager {
                                                 data: Some(peer_upload_file),
                                                 status: Some(Status::SUCCESS),
                                                 protocol: Protocol::TURN,
-                                                uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+                                                uuid: self.db.get_or_create_peer_id().unwrap(),
                                             };
                                             println!(
                                                 "{}",
@@ -301,7 +314,7 @@ impl ConnectionManager {
                                         let filename = data["filename"].as_str().unwrap();
                                         let contents = data["contents"].as_str().unwrap();
                                         let dir_path: String =
-                                            format!("{}/recive_files", GLOBAL_DB.path.as_str());
+                                            format!("{}/recive_files", self.db.path.as_str());
                                         if !std::path::Path::new(&dir_path).exists() {
                                             tokio::fs::create_dir_all(&dir_path).await.unwrap();
                                         }
@@ -330,7 +343,7 @@ impl ConnectionManager {
                                             ),
                                             status: None,
                                             protocol: Protocol::TURN,
-                                            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+                                            uuid: self.db.get_or_create_peer_id().unwrap(),
                                         };
                                         if let Err(e) =
                                             connection.send_packet(response_packet).await

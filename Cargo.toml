@@ -43,3 +43,7 @@ features = [
 
 [build] 
 rustflags = ["-L", "E:\\VHP\\P2P-Server\\libs\\Packet.lib"]
+
+[lib]
+name = "p2p_server"
+path = "src/lib.rs"

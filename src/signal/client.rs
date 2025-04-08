@@ -1,9 +1,9 @@
+use crate::db::P2PDatabase;
 use crate::packets::PeerInfo;
 use crate::packets::{Protocol, TransportPacket};
-use crate::GLOBAL_DB;
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::io::{AsyncWriteExt, split};
+use tokio::io::{split, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
 
@@ -19,16 +19,18 @@ type PeersReceiver = mpsc::Receiver<Peer>;
 pub struct SignalClient {
     writer: Option<Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>>,
     reader: Option<Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>>,
+    db: Arc<P2PDatabase>,
 }
 
 impl SignalClient {
-    pub fn new() -> Self {
+    pub fn new(db: &P2PDatabase) -> Self {
         // let config: Config = Config::from_file("config.toml");
         // let signal_server_port = config.signal_server_port;
 
         SignalClient {
             writer: None,
             reader: None,
+            db: Arc::new(db.clone()),
         }
     }
 
@@ -51,8 +53,9 @@ impl SignalClient {
                 self.reader = Some(Arc::new(RwLock::new(reader)));
 
                 let peer_info = serde_json::to_value(PeerInfo {
-                    peer_id: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                }).unwrap();
+                    peer_id: self.db.get_or_create_peer_id().unwrap(),
+                })
+                .unwrap();
 
                 let connect_packet = TransportPacket {
                     public_addr: format!("{}:{}", public_ip, public_port),
@@ -61,7 +64,7 @@ impl SignalClient {
                     data: Some(peer_info),
                     status: None,
                     protocol: Protocol::SIGNAL,
-                    uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+                    uuid: self.db.get_or_create_peer_id().unwrap(),
                 };
 
                 let connect_packet = serde_json::to_string(&connect_packet).unwrap();
@@ -97,7 +100,10 @@ impl SignalClient {
         }
 
         if let Some(writer) = &self.writer {
-            println!("[SignalClient] Sending turn data to signal server: {}", string_packet);
+            println!(
+                "[SignalClient] Sending turn data to signal server: {}",
+                string_packet
+            );
 
             let result = writer
                 .clone()

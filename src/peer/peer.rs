@@ -6,20 +6,21 @@ use crate::config::Config;
 use crate::connection::Connection;
 use crate::manager::ConnectionManager::ConnectionManager;
 use crate::tunnel::Tunnel;
-use crate::GLOBAL_DB;
+use crate::db::P2PDatabase;
 
 pub struct Peer {
     connection_manager: Arc<ConnectionManager>,
     connection: Arc<Connection>,
     tunnel: Arc<Mutex<Tunnel>>,
     my_public_addr: String,
+    db: Arc<P2PDatabase>,
 }
 
 impl Peer {
-    pub async fn new() -> Self {
+    pub async fn new(db: &P2PDatabase) -> Self {
         let config: Config = Config::from_file("config.toml");
         let tunnel = Arc::new(Mutex::new(Tunnel::new().await));
-        let connection_manager = Arc::new(ConnectionManager::new().await);
+        let connection_manager = Arc::new(ConnectionManager::new(db).await);
 
         {
             let tunnel_guard = tunnel.lock().await;
@@ -47,6 +48,7 @@ impl Peer {
                 config.signal_server_port,
                 tunnel_public_ip,
                 tunnel_public_port,
+                db,
             )
             .await,
         );
@@ -63,11 +65,12 @@ impl Peer {
             connection,
             tunnel,
             my_public_addr,
+            db: Arc::new(db.clone()),
         }
     }
 
     pub async fn run(&self) {
-        let peer_id = GLOBAL_DB.get_or_create_peer_id().unwrap();
+        let peer_id = self.db.get_or_create_peer_id().unwrap();
         println!("{}", format!("[Peer] Your UUID: {}", peer_id).yellow());
 
         println!("[Peer] Starting peer...");

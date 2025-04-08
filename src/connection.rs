@@ -9,7 +9,7 @@ use tokio::time::sleep;
 
 use crate::packets::{Protocol, TransportPacket};
 use crate::peer::peer_api::PeerAPI;
-use crate::GLOBAL_DB;
+use crate::db::P2PDatabase;
 
 #[derive(Debug)]
 pub enum Message {
@@ -24,6 +24,7 @@ pub struct Connection {
     pub tx: mpsc::Sender<Message>,
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
+    db: Arc<P2PDatabase>,
 }
 
 impl Connection {
@@ -32,6 +33,7 @@ impl Connection {
         signal_server_port: i64,
         tunnel_public_ip: String,
         tunnel_public_port: u16,
+        db: &P2PDatabase,
     ) -> Connection {
         let (tx, rx) = mpsc::channel(16);
 
@@ -49,11 +51,11 @@ impl Connection {
             act: "info".to_string(),
             to: None,
             data: Some(
-                serde_json::json!({ "peer_id": &GLOBAL_DB.get_or_create_peer_id().unwrap() }),
+                serde_json::json!({ "peer_id": db.get_or_create_peer_id().unwrap() }),
             ),
             status: None,
             protocol: Protocol::SIGNAL,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: db.get_or_create_peer_id().unwrap(),
         };
 
         if let Err(e) = Self::write_packet(&writer, &connect_packet).await {
@@ -69,9 +71,15 @@ impl Connection {
             writer.clone(),
             tunnel_public_ip,
             tunnel_public_port,
+            Arc::new(db.clone()),
         ));
 
-        Connection { tx, writer, reader }
+        Connection { 
+            tx, 
+            writer, 
+            reader,
+            db: Arc::new(db.clone()),
+        }
     }
     
     async fn write_packet(
@@ -109,12 +117,13 @@ impl Connection {
         writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
         tunnel_public_ip: String,
         tunnel_public_port: u16,
+        db: Arc<P2PDatabase>,
     ) {
         println!("[Connection] Processing messages");
 
         sleep(Duration::from_millis(100)).await;
 
-        match Self::send_peer_info_request(&writer, &tunnel_public_ip, tunnel_public_port).await {
+        match Self::send_peer_info_request(&writer, &tunnel_public_ip, tunnel_public_port, &db).await {
             Ok(_) => (),
             Err(e) => {
                 println!("[Connection] Failed to send peer info request: {}", e);
@@ -149,17 +158,18 @@ impl Connection {
         writer: &Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
         public_ip: &str,
         public_port: u16,
+        db: &P2PDatabase,
     ) -> Result<(), String> {
         let connect_packet = TransportPacket {
             public_addr: format!("{}:{}", public_ip, public_port),
-            act: "info".to_string(),//wait_connection
+            act: "info".to_string(),
             to: None,
             data: Some(
-                serde_json::json!({ "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap() }),
+                serde_json::json!({ "peer_id": db.get_or_create_peer_id().unwrap() }),
             ),
             status: None,
             protocol: Protocol::STUN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: db.get_or_create_peer_id().unwrap(),
         };
 
         Self::write_packet(writer, &connect_packet).await

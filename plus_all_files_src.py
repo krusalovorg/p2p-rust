@@ -7,15 +7,16 @@ def read_all_files(directory):
     for root, dirs, files in os.walk(directory):
         for file in files:
             file_path = os.path.join(root, file)
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    lines = content.split('\n')
-                    total_lines += len(lines)
-                    all_content.append(f"\n\n=== {file_path} ===\n")
-                    all_content.append(content)
-            except Exception as e:
-                print(f"Ошибка при чтении файла {file_path}: {e}")
+            if file.endswith('.rs'):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        lines = content.split('\n')
+                        total_lines += len(lines)
+                        all_content.append(f"\n\n=== {file_path} ===\n")
+                        all_content.append(content)
+                except Exception as e:
+                    print(f"Ошибка при чтении файла {file_path}: {e}")
     
     return ''.join(all_content), total_lines
 

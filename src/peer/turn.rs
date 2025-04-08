@@ -1,17 +1,16 @@
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use colored::*;
 
 use crate::connection::Connection;
 use crate::packets::{Protocol, TransportPacket};
-use crate::tunnel::Tunnel;
-use crate::GLOBAL_DB;
+use crate::db::P2PDatabase;
 
 pub async fn turn_tunnel(
     packet: TransportPacket,
     my_public_addr: Arc<String>,
     signal: &Connection,
+    db: &P2PDatabase,
 ) -> Result<String, String> {
 
     println!(
@@ -26,7 +25,7 @@ pub async fn turn_tunnel(
             data: None,
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: db.get_or_create_peer_id().unwrap(),
         };
         let result = signal.send_packet(packet_hello).await;
         println!(
@@ -49,7 +48,7 @@ pub async fn turn_tunnel(
             data: None,
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: db.get_or_create_peer_id().unwrap(),
         };
         println!("{}", "[TURN] [accept_connection] Sending accept connection".yellow());
         let result = signal.send_packet(packet_hello).await;
