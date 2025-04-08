@@ -1,6 +1,6 @@
 mod db;
 mod models;
-mod tables;
+pub mod tables;
 mod peer;
 mod secret_keys;
 mod storage;

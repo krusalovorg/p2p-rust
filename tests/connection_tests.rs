@@ -1,0 +1,94 @@
+#[cfg(test)]
+mod tests {
+    use p2p_server::connection::Connection;
+    use p2p_server::db::P2PDatabase;
+    use p2p_server::packets::{TransportPacket, Protocol, Status};
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncReadExt;
+    use std::env;
+    use std::fs;
+
+    fn create_temp_db() -> String {
+        let temp_dir = env::temp_dir().join("p2p_server_tests");
+        if temp_dir.exists() {
+            fs::remove_dir_all(&temp_dir).unwrap();
+        }
+        fs::create_dir_all(&temp_dir).unwrap();
+        temp_dir.to_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_connection_establishment() {
+        // Создаем тестовый TCP сервер
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Создаем тестовую базу данных
+        let db_path = create_temp_db();
+        let db = Arc::new(P2PDatabase::new(&db_path).unwrap());
+
+        // Создаем соединение
+        let connection = Connection::new(
+            "127.0.0.1".to_string(),
+            addr.port() as i64,
+            "127.0.0.1".to_string(),
+            8080,
+            &db,
+        )
+        .await;
+
+        // Принимаем входящее соединение
+        let (mut socket, _) = listener.accept().await.unwrap();
+
+        // Проверяем, что соединение установлено
+        assert!(connection.tx.capacity() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_send_and_receive_packet() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let db_path = create_temp_db();
+        let db = Arc::new(P2PDatabase::new(&db_path).unwrap());
+        let peer_id = db.get_or_create_peer_id().unwrap();
+
+        let connection = Connection::new(
+            "127.0.0.1".to_string(),
+            addr.port() as i64,
+            "127.0.0.1".to_string(),
+            8080,
+            &db,
+        )
+        .await;
+
+        let (mut socket, _) = listener.accept().await.unwrap();
+
+        let test_packet = TransportPacket {
+            public_addr: "127.0.0.1:8080".to_string(),
+            act: "test".to_string(),
+            to: None,
+            data: Some(serde_json::json!({ "test": "data" })),
+            status: Some(Status::SUCCESS),
+            protocol: Protocol::SIGNAL,
+            uuid: peer_id,
+        };
+
+        // Отправляем пакет
+        connection.send_packet(test_packet.clone()).await.unwrap();
+
+        // Читаем пакет с сервера
+        let mut len_bytes = [0u8; 4];
+        socket.read_exact(&mut len_bytes).await.unwrap();
+        let packet_len = u32::from_be_bytes(len_bytes) as usize;
+
+        let mut packet_bytes = vec![0u8; packet_len];
+        socket.read_exact(&mut packet_bytes).await.unwrap();
+
+        let received_packet: TransportPacket = serde_json::from_slice(&packet_bytes).unwrap();
+
+        assert_eq!(test_packet.act, received_packet.act);
+        assert_eq!(test_packet.protocol, received_packet.protocol);
+    }
+} 
