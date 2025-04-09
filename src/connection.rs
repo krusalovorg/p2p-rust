@@ -7,8 +7,7 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task;
 use tokio::time::sleep;
 
-use crate::packets::{Protocol, TransportPacket};
-use crate::peer::peer_api::PeerAPI;
+use crate::packets::{Protocol, TransportPacket, TransportData, PeerInfo};
 use crate::db::P2PDatabase;
 
 #[derive(Debug)]
@@ -51,7 +50,9 @@ impl Connection {
             act: "info".to_string(),
             to: None,
             data: Some(
-                serde_json::json!({ "peer_id": db.get_or_create_peer_id().unwrap() }),
+                TransportData::PeerInfo(PeerInfo {
+                    peer_id: db.get_or_create_peer_id().unwrap(),
+                }),
             ),
             status: None,
             protocol: Protocol::SIGNAL,
@@ -97,7 +98,7 @@ impl Connection {
         }
 
         // Отправляем само сообщение
-        println!("[Connection] Writing packet to socket: {:?}", packet);
+        // println!("[Connection] Writing packet to socket: {:?}", packet);
         match writer.write_all(packet_str.as_bytes()).await {
             Ok(_) => {
                 println!("[Connection] Packet sent successfully");
@@ -165,7 +166,9 @@ impl Connection {
             act: "info".to_string(),
             to: None,
             data: Some(
-                serde_json::json!({ "peer_id": db.get_or_create_peer_id().unwrap() }),
+                TransportData::PeerInfo(PeerInfo {
+                    peer_id: db.get_or_create_peer_id().unwrap(),
+                }),
             ),
             status: None,
             protocol: Protocol::STUN,

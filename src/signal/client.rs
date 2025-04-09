@@ -1,6 +1,5 @@
 use crate::db::P2PDatabase;
-use crate::packets::PeerInfo;
-use crate::packets::{Protocol, TransportPacket};
+use crate::packets::{PeerInfo, Protocol, TransportData, TransportPacket};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::io::{split, AsyncWriteExt};
@@ -52,16 +51,13 @@ impl SignalClient {
                 self.writer = Some(Arc::new(RwLock::new(writer)));
                 self.reader = Some(Arc::new(RwLock::new(reader)));
 
-                let peer_info = serde_json::to_value(PeerInfo {
-                    peer_id: self.db.get_or_create_peer_id().unwrap(),
-                })
-                .unwrap();
-
                 let connect_packet = TransportPacket {
                     public_addr: format!("{}:{}", public_ip, public_port),
                     act: "info".to_string(),
                     to: None,
-                    data: Some(peer_info),
+                    data: Some(TransportData::PeerInfo(PeerInfo {
+                        peer_id: self.db.get_or_create_peer_id().unwrap(),
+                    })),
                     status: None,
                     protocol: Protocol::SIGNAL,
                     uuid: self.db.get_or_create_peer_id().unwrap(),

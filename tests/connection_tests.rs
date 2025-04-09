@@ -1,21 +1,20 @@
 #[cfg(test)]
 mod tests {
+    use async_std::path::PathBuf;
     use p2p_server::connection::Connection;
     use p2p_server::db::P2PDatabase;
-    use p2p_server::packets::{TransportPacket, Protocol, Status};
+    use p2p_server::packets::{TransportPacket, Protocol, Status, TransportData, Message};
     use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::io::AsyncReadExt;
-    use std::env;
-    use std::fs;
 
-    fn create_temp_db() -> String {
-        let temp_dir = env::temp_dir().join("p2p_server_tests");
-        if temp_dir.exists() {
-            fs::remove_dir_all(&temp_dir).unwrap();
+    async fn create_temp_db() -> String {
+        let path = PathBuf::from("tests/temp-db");
+        if !path.exists().await {
+            std::fs::create_dir_all(&path).unwrap();
         }
-        fs::create_dir_all(&temp_dir).unwrap();
-        temp_dir.to_str().unwrap().to_string()
+        let db = P2PDatabase::new(path.to_str().unwrap()).unwrap();    
+        db.path.clone()
     }
 
     #[tokio::test]
@@ -25,13 +24,13 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         // Создаем тестовую базу данных
-        let db_path = create_temp_db();
+        let db_path = create_temp_db().await;
         let db = Arc::new(P2PDatabase::new(&db_path).unwrap());
 
         // Создаем соединение
         let connection = Connection::new(
             "127.0.0.1".to_string(),
-            addr.port() as i64,
+            3031,
             "127.0.0.1".to_string(),
             8080,
             &db,
@@ -50,13 +49,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let db_path = create_temp_db();
+        let db_path = create_temp_db().await;
         let db = Arc::new(P2PDatabase::new(&db_path).unwrap());
         let peer_id = db.get_or_create_peer_id().unwrap();
 
         let connection = Connection::new(
             "127.0.0.1".to_string(),
-            addr.port() as i64,
+            3031,
             "127.0.0.1".to_string(),
             8080,
             &db,
@@ -69,7 +68,7 @@ mod tests {
             public_addr: "127.0.0.1:8080".to_string(),
             act: "test".to_string(),
             to: None,
-            data: Some(serde_json::json!({ "test": "data" })),
+            data: Some(TransportData::Message(Message { text: "test data".to_string() })),
             status: Some(Status::SUCCESS),
             protocol: Protocol::SIGNAL,
             uuid: peer_id,

@@ -2,7 +2,7 @@
 mod tests {
     use p2p_server::packets::{
         PeerFileSaved, PeerInfo, PeerWaitConnection, Protocol, Status, SyncPeerInfo,
-        SyncPeerInfoData, TransportPacket,
+        SyncPeerInfoData, TransportPacket, TransportData, Message
     };
     use p2p_server::db::P2PDatabase;
     use std::sync::Arc;
@@ -92,7 +92,7 @@ mod tests {
             public_addr: "127.0.0.1:8080".to_string(),
             act: "test".to_string(),
             to: Some("peer2".to_string()),
-            data: Some(serde_json::json!({ "test": "data" })),
+            data: Some(TransportData::Message(Message { text: "test data".to_string() })),
             status: Some(Status::SUCCESS),
             protocol: Protocol::SIGNAL,
             uuid: "peer1".to_string(),

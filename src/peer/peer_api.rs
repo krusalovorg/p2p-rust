@@ -1,8 +1,10 @@
-use std::sync::Arc;
-use serde_json::json;
 use crate::connection::Connection;
-use crate::packets::{Protocol, TransportPacket};
 use crate::db::P2PDatabase;
+use crate::packets::{
+    Message, PeerFileGet, PeerUploadFile, PeerWaitConnection, Protocol, TransportData,
+    TransportPacket,
+};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct PeerAPI {
@@ -25,7 +27,10 @@ impl PeerAPI {
             public_addr: self.my_public_addr.to_string(),
             act: "get_file".to_string(),
             to: Some(peer_id),
-            data: Some(json!({"session_key": session_key})),
+            data: Some(TransportData::PeerFileGet(PeerFileGet {
+                session_key: session_key,
+                peer_id: self.db.get_or_create_peer_id().unwrap(),
+            })),
             status: None,
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
@@ -35,22 +40,24 @@ impl PeerAPI {
     }
 
     pub async fn upload_file(&self, peer_id: String, file_path: String) -> Result<(), String> {
-        let contents = tokio::fs::read(&file_path).await.map_err(|e| e.to_string())?;
-        
-        let peer_upload_file = json!({
-            "filename": file_path,
-            "contents": base64::encode(contents),
-            "peer_id": self.db.get_or_create_peer_id().unwrap(),
-        });
+        let contents = tokio::fs::read(&file_path)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let my_peer_id = self.db.get_or_create_peer_id().unwrap();
 
         let packet = TransportPacket {
             public_addr: self.my_public_addr.to_string(),
             act: "save_file".to_string(),
             to: Some(peer_id),
-            data: Some(peer_upload_file),
+            data: Some(TransportData::PeerUploadFile(PeerUploadFile {
+                filename: file_path,
+                contents: base64::encode(contents),
+                peer_id: my_peer_id.clone().to_string(),
+            })),
             status: None,
             protocol: Protocol::TURN,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            uuid: my_peer_id.clone().to_string(),
         };
 
         self.connection.send_packet(packet).await
@@ -61,7 +68,7 @@ impl PeerAPI {
             public_addr: self.my_public_addr.to_string(),
             act: "message".to_string(),
             to: Some(peer_id),
-            data: Some(json!({"text": message})),
+            data: Some(TransportData::Message(Message { text: message })),
             status: None,
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
@@ -75,9 +82,9 @@ impl PeerAPI {
             public_addr: self.my_public_addr.to_string(),
             act: "wait_connection".to_string(),
             to: None,
-            data: Some(json!({
-                "connect_peer_id": peer_id,
-                "peer_id": self.db.get_or_create_peer_id().unwrap()
+            data: Some(TransportData::PeerWaitConnection(PeerWaitConnection {
+                connect_peer_id: peer_id,
+                peer_id: self.db.get_or_create_peer_id().unwrap(),
             })),
             status: None,
             protocol: Protocol::STUN,
@@ -100,4 +107,4 @@ impl PeerAPI {
         println!("{}", format!("[Peer] Sending peer list to signal server"));
         self.connection.send_packet(packet).await
     }
-} 
+}

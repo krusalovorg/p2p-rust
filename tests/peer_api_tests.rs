@@ -2,11 +2,13 @@
 mod tests {
     use p2p_server::connection::Connection;
     use p2p_server::db::P2PDatabase;
-    use p2p_server::packets::{TransportPacket, Protocol, Status, PeerWaitConnection};
+    use p2p_server::packets::{
+        PeerWaitConnection, Protocol, Status, TransportData, TransportPacket,
+    };
     use p2p_server::peer::peer_api::PeerAPI;
     use std::sync::Arc;
-    use tokio::net::TcpListener;
     use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
 
     #[tokio::test]
     async fn test_peer_api_creation() {
@@ -72,7 +74,7 @@ mod tests {
             public_addr: "127.0.0.1:8080".to_string(),
             act: "wait_connection".to_string(),
             to: None,
-            data: Some(serde_json::to_value(wait_conn).unwrap()),
+            data: Some(TransportData::PeerWaitConnection(wait_conn)),
             status: Some(Status::SUCCESS),
             protocol: Protocol::SIGNAL,
             uuid: peer_id.clone(),
@@ -93,4 +95,4 @@ mod tests {
         assert_eq!(packet.act, received_packet.act);
         assert_eq!(packet.protocol, received_packet.protocol);
     }
-} 
+}

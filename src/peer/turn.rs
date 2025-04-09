@@ -21,7 +21,7 @@ pub async fn turn_tunnel(
         let packet_hello = TransportPacket {
             public_addr: my_public_addr.clone().to_string(),
             act: "try_turn_connection".to_string(),
-            to: Some(packet.public_addr.clone().to_string()),
+            to: Some(packet.uuid.clone().to_string()),
             data: None,
             status: None,
             protocol: Protocol::TURN,
@@ -44,7 +44,7 @@ pub async fn turn_tunnel(
         let packet_hello = TransportPacket {
             public_addr: my_public_addr.clone().to_string(),
             act: "accept_connection".to_string(),
-            to: Some(packet.public_addr.to_string()),
+            to: Some(packet.uuid.to_string()),
             data: None,
             status: None,
             protocol: Protocol::TURN,

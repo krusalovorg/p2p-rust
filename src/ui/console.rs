@@ -105,14 +105,10 @@ pub async fn console_manager(
                     let file_path = trimmed_input.strip_prefix("upload ").unwrap();
                     if let Err(e) = api.upload_file(key.clone(), file_path.to_string()).await {
                         println!("{}", format!("[Peer] Failed to upload file: {}", e).red());
-                    } else {
-                        println!("{}", "[Peer] File uploaded successfully".green());
                     }
                 } else {
                     if let Err(e) = api.send_message(key.clone(), trimmed_input.to_string()).await {
                         println!("{}", format!("[Peer] Failed to send message: {}", e).red());
-                    } else {
-                        println!("{}", "[Peer] Message sent successfully".green());
                     }
                 }
             }

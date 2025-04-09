@@ -2,7 +2,8 @@ use super::ConnectionManager::ConnectionManager;
 use crate::db::{Fragment, Storage};
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::{
-    PeerFileSaved, PeerUploadFile, Protocol, Status, SyncPeerInfoData, TransportPacket,
+    FileData, Message, PeerFileSaved, PeerUploadFile, Protocol, SaveFile, Status, SyncPeerInfoData,
+    TransportData, TransportPacket,
 };
 use crate::peer::turn_tunnel;
 use colored::Colorize;
@@ -25,33 +26,19 @@ impl ConnectionManager {
                                 "{}",
                                 format!("[Peer] Received packet: {:?}", packet).yellow()
                             );
-                            let from_public_addr = packet.public_addr.clone();
                             let from_uuid = packet.uuid.clone();
                             let packet_clone = packet.clone();
                             let protocol_connection = packet.protocol.clone();
                             if packet.act == "peer_list" {
-                                if let Some(data) = packet.data {
-                                    match serde_json::from_value::<SyncPeerInfoData>(data) {
-                                        Ok(peer_info_data) => {
-                                            println!("{}", "[Peer] Received peer list:".yellow());
-                                            for peer in peer_info_data.peers {
-                                                println!(
-                                                    "{}",
-                                                    format!(
-                                                    "[Peer] Peer - Public Address: {}, UUID: {}",
-                                                    peer.public_addr, peer.uuid
-                                                )
-                                                    .cyan()
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            println!(
-                                                "{}",
-                                                format!("[Peer] Failed to parse peer list: {}", e)
-                                                    .red()
-                                            );
-                                        }
+                                if let Some(TransportData::SyncPeerInfoData(peer_info_data)) =
+                                    packet.data
+                                {
+                                    println!("{}", "[Peer] Received peer list:".yellow());
+                                    for peer in peer_info_data.peers {
+                                        println!(
+                                            "{}",
+                                            format!("[Peer] Peer - UUID: {}", peer.uuid).cyan()
+                                        );
                                     }
                                 } else {
                                     println!("{}", "[Peer] Peer list data is missing.".red());
@@ -61,11 +48,7 @@ impl ConnectionManager {
                             {
                                 println!(
                                     "{}",
-                                    format!(
-                                        "[Peer] [Stun] From public address: {}",
-                                        from_public_addr
-                                    )
-                                    .yellow()
+                                    format!("[Peer] [Stun] From UUID: {}", from_uuid).yellow()
                                 );
                                 println!("{}", "[Peer] Start stun tunnel".yellow());
                                 let result_tunnel = self.stun_tunnel(packet).await;
@@ -99,11 +82,10 @@ impl ConnectionManager {
                                     },
                                 );
                             }
-                            //println from_public_addr
+
                             println!(
                                 "{}",
-                                format!("[Peer] From public address: {}", from_public_addr)
-                                    .yellow()
+                                format!("[Peer] From UUID: {}", from_uuid.clone()).yellow()
                             );
                             if let Some(status) =
                                 self.connections_turn.write().await.get_mut(&from_uuid)
@@ -138,7 +120,7 @@ impl ConnectionManager {
                                                 let packet_hello = TransportPacket {
                                                     public_addr: (*self.my_public_addr).clone(),
                                                     act: "test_turn".to_string(),
-                                                    to: Some(from_public_addr.clone()),
+                                                    to: Some(from_uuid.clone()),
                                                     data: None,
                                                     status: None,
                                                     protocol: Protocol::TURN,
@@ -167,192 +149,206 @@ impl ConnectionManager {
                                 } else {
                                     let packet_file_clone = packet_clone.clone();
                                     if packet_clone.act == "save_file" {
-                                        let data = packet_file_clone.data.unwrap();
-                                        let session_key = self
-                                            .db
-                                            .generate_and_store_secret_key(
-                                                data["peer_id"].as_str().unwrap(),
-                                            )
-                                            .unwrap();
-
-                                        let filename = data["filename"].as_str().unwrap();
-                                        let contents =
-                                            base64::decode(data["contents"].as_str().unwrap())
-                                                .unwrap();
-                                        let dir_path: String =
-                                            format!("{}/files", self.db.path.as_str());
-                                        if !std::path::Path::new(&dir_path).exists() {
-                                            tokio::fs::create_dir_all(&dir_path).await.unwrap();
-                                        }
-                                        let path = format!("{}/{}", dir_path, filename);
-                                        let mut file = File::create(path).await.unwrap();
-                                        file.write_all(&contents).await.unwrap();
-
-                                        let _ = self.db.add_storage_fragment(Storage {
-                                            filename: filename.to_string(),
-                                            session_key: session_key.clone(),
-                                            session: session_key.clone().to_string().to_string(),
-                                            owner_id: data["peer_id"].as_str().unwrap().to_string(),
-                                            storage_peer_id: self
-                                                .db
-                                                .get_or_create_peer_id()
-                                                .unwrap(),
-                                        });
-
-                                        println!("{}", "[Peer] File saved".green());
-
-                                        let packet_feedback = TransportPacket {
-                                            public_addr: (*self.my_public_addr).clone(),
-                                            act: "file_saved".to_string(),
-                                            to: Some(from_public_addr.clone()),
-                                            data: Some(
-                                                serde_json::to_value(PeerFileSaved {
-                                                    filename: filename.to_string(),
-                                                    session_key: session_key.clone(),
-                                                    peer_id: self
-                                                        .db
-                                                        .get_or_create_peer_id()
-                                                        .unwrap(),
-                                                })
-                                                .unwrap(),
-                                            ),
-                                            status: None,
-                                            protocol: Protocol::TURN,
-                                            uuid: self.db.get_or_create_peer_id().unwrap(),
-                                        };
-
-                                        if let Err(e) =
-                                            connection.send_packet(packet_feedback).await
+                                        println!(
+                                            "{}",
+                                            "[Peer] Peer want upload file, getted save_file packet"
+                                                .yellow()
+                                        );
+                                        if let Some(TransportData::PeerUploadFile(data)) =
+                                            packet_file_clone.data
                                         {
                                             println!(
                                                 "{}",
-                                                format!("[Peer] Failed to send packet: {}", e)
-                                                    .red()
+                                                "[Peer] File uploaded successfully".green()
                                             );
-                                        }
-                                    } else if packet_clone.act == "file_saved" {
-                                        let data = packet_clone.data.unwrap();
-                                        let filename = data["filename"].as_str().unwrap();
-                                        let session_key = data["session_key"].as_str().unwrap();
-                                        let peer_id = data["peer_id"].as_str().unwrap();
-
-                                        let _ = self.db.add_myfile_fragment(Fragment {
-                                            uuid_peer: peer_id.to_string(),
-                                            session_key: session_key.to_string(),
-                                            session: session_key.to_string(),
-                                            filename: filename.to_string(),
-                                        });
-
-                                        println!(
-                                            "{}",
-                                            format!(
-                                                "\x1b[32m[Peer] File saved. Session key: {}\x1b[0m",
-                                                session_key
-                                            )
-                                            .green()
-                                        );
-                                    } else if packet_clone.act == "get_file" {
-                                        println!("{}", "Get file packet".yellow());
-                                        let data = packet_file_clone.data.unwrap();
-                                        let session_key = data["session_key"].as_str().unwrap();
-                                        let contents =
-                                            self.db.get_storage_fragments_by_key(session_key);
-                                        for fragment in contents.unwrap() {
-                                            let dir_path =
-                                                format!("{}/files", self.db.path.as_str());
-                                            let path =
-                                                format!("{}/{}", dir_path, fragment.filename);
-                                            let mut file = File::open(path).await.unwrap();
-                                            let mut contents = vec![];
-                                            file.read_to_end(&mut contents).await.unwrap();
-
-                                            let peer_upload_file =
-                                                serde_json::to_value(PeerUploadFile {
-                                                    filename: fragment.filename.clone(),
-                                                    contents: base64::encode(contents),
-                                                    peer_id: self
-                                                        .db
-                                                        .get_or_create_peer_id()
-                                                        .unwrap(),
-                                                })
+                                            let session_key = self
+                                                .db
+                                                .generate_and_store_secret_key(&data.peer_id)
                                                 .unwrap();
 
-                                            let packet_file = TransportPacket {
+                                            let contents = base64::decode(&data.contents).unwrap();
+                                            let dir_path: String =
+                                                format!("{}/files", self.db.path.as_str());
+                                            if !std::path::Path::new(&dir_path).exists() {
+                                                tokio::fs::create_dir_all(&dir_path).await.unwrap();
+                                            }
+                                            let path = format!("{}/{}", dir_path, data.filename);
+                                            let mut file = File::create(path).await.unwrap();
+                                            file.write_all(&contents).await.unwrap();
+
+                                            let _ = self.db.add_storage_fragment(Storage {
+                                                filename: data.filename.clone(),
+                                                session_key: session_key.clone(),
+                                                session: session_key.clone(),
+                                                owner_id: data.peer_id,
+                                                storage_peer_id: self
+                                                    .db
+                                                    .get_or_create_peer_id()
+                                                    .unwrap(),
+                                            });
+
+                                            println!("{}", "[Peer] File saved".green());
+
+                                            let packet_feedback = TransportPacket {
                                                 public_addr: (*self.my_public_addr).clone(),
-                                                act: "file".to_string(),
-                                                to: Some(from_public_addr.clone()),
-                                                data: Some(peer_upload_file),
-                                                status: Some(Status::SUCCESS),
+                                                act: "file_saved".to_string(),
+                                                to: Some(from_uuid.clone()),
+                                                data: Some(TransportData::PeerFileSaved(
+                                                    PeerFileSaved {
+                                                        filename: data.filename,
+                                                        session_key: session_key,
+                                                        peer_id: self
+                                                            .db
+                                                            .get_or_create_peer_id()
+                                                            .unwrap(),
+                                                    },
+                                                )),
+                                                status: None,
                                                 protocol: Protocol::TURN,
                                                 uuid: self.db.get_or_create_peer_id().unwrap(),
                                             };
-                                            println!(
-                                                "{}",
-                                                format!(
-                                                    "[Peer] Sending file: {}",
-                                                    fragment.filename.clone()
-                                                )
-                                                .cyan()
-                                            );
+
                                             if let Err(e) =
-                                                connection.send_packet(packet_file).await
+                                                connection.send_packet(packet_feedback).await
                                             {
                                                 println!(
                                                     "{}",
                                                     format!("[Peer] Failed to send packet: {}", e)
                                                         .red()
                                                 );
-                                            } else {
+                                            }
+                                        }
+                                    } else if packet_clone.act == "file_saved" {
+                                        if let Some(TransportData::PeerFileSaved(data)) =
+                                            packet_clone.data
+                                        {
+                                            let session_key_clone =
+                                                data.session_key.clone().to_string();
+                                            let _ = self.db.add_myfile_fragment(Fragment {
+                                                uuid_peer: data.peer_id,
+                                                session_key: session_key_clone.clone(),
+                                                session: session_key_clone.clone(),
+                                                filename: data.filename.clone(),
+                                            });
+
+                                            println!("{}", format!("\x1b[32m[Peer] File saved. Session key: {}\x1b[0m", session_key_clone).green());
+                                        }
+                                    } else if packet_clone.act == "get_file" {
+                                        println!("{}", "Get file packet".yellow());
+                                        if let Some(TransportData::PeerFileGet(data)) =
+                                            packet_file_clone.data
+                                        {
+                                            let contents = self
+                                                .db
+                                                .get_storage_fragments_by_key(&data.session_key);
+                                            for fragment in contents.unwrap() {
+                                                let dir_path =
+                                                    format!("{}/files", self.db.path.as_str());
+                                                let path =
+                                                    format!("{}/{}", dir_path, fragment.filename);
+                                                let mut file = File::open(path).await.unwrap();
+                                                let mut contents = vec![];
+                                                file.read_to_end(&mut contents).await.unwrap();
+
+                                                let packet_file = TransportPacket {
+                                                    public_addr: (*self.my_public_addr).clone(),
+                                                    act: "file".to_string(),
+                                                    to: Some(from_uuid.clone()),
+                                                    data: Some(TransportData::FileData(FileData {
+                                                        filename: fragment
+                                                            .filename
+                                                            .clone()
+                                                            .to_string(),
+                                                        contents: base64::encode(contents),
+                                                        peer_id: self
+                                                            .db
+                                                            .get_or_create_peer_id()
+                                                            .unwrap(),
+                                                    })),
+                                                    status: Some(Status::SUCCESS),
+                                                    protocol: Protocol::TURN,
+                                                    uuid: self.db.get_or_create_peer_id().unwrap(),
+                                                };
                                                 println!(
                                                     "{}",
-                                                    "[Peer] Packet sent successfully".green()
+                                                    format!(
+                                                        "[Peer] Sending file: {}",
+                                                        fragment.filename.clone()
+                                                    )
+                                                    .cyan()
                                                 );
+                                                if let Err(e) =
+                                                    connection.send_packet(packet_file).await
+                                                {
+                                                    println!(
+                                                        "{}",
+                                                        format!(
+                                                            "[Peer] Failed to send packet: {}",
+                                                            e
+                                                        )
+                                                        .red()
+                                                    );
+                                                } else {
+                                                    println!(
+                                                        "{}",
+                                                        "[Peer] Packet sent successfully".green()
+                                                    );
+                                                }
                                             }
                                         }
                                     } else if packet_clone.act == "file" {
-                                        let data = packet_file_clone.data.unwrap();
-                                        let filename = data["filename"].as_str().unwrap();
-                                        let contents = data["contents"].as_str().unwrap();
-                                        let dir_path: String =
-                                            format!("{}/recive_files", self.db.path.as_str());
-                                        if !std::path::Path::new(&dir_path).exists() {
-                                            tokio::fs::create_dir_all(&dir_path).await.unwrap();
+                                        if let Some(TransportData::FileData(data)) =
+                                            packet_file_clone.data
+                                        {
+                                            let dir_path: String =
+                                                format!("{}/recive_files", self.db.path.as_str());
+                                            if !std::path::Path::new(&dir_path).exists() {
+                                                tokio::fs::create_dir_all(&dir_path).await.unwrap();
+                                            }
+                                            let path = format!("{}/{}", dir_path, data.filename);
+                                            let mut file = File::create(path).await.unwrap();
+                                            let contents = base64::decode(data.contents).unwrap();
+                                            file.write_all(&contents).await.unwrap();
+                                            println!(
+                                                "{}",
+                                                format!("[Peer] File saved: {}", data.filename)
+                                                    .green()
+                                            );
                                         }
-                                        let path = format!("{}/{}", dir_path, filename);
-                                        let mut file = File::create(path).await.unwrap();
-                                        let contents = base64::decode(contents).unwrap();
-                                        file.write_all(&contents).await.unwrap();
-                                        println!(
-                                            "{}",
-                                            format!("[Peer] File saved: {}", filename).green()
-                                        );
+                                    } else if packet_clone.act == "message_response" {
+                                        println!("{}", "[Peer] Message sent successfully".green());
                                     } else if packet_clone.act == "message" {
-                                        let data = packet_clone.data.unwrap();
-                                        let message = data["text"].as_str().unwrap();
-                                        println!(
-                                            "{}",
-                                            format!("[Peer] Message: {}", message).green()
-                                        );
-
-                                        let response_packet = TransportPacket {
-                                            public_addr: (*self.my_public_addr).clone(),
-                                            act: "message_response".to_string(),
-                                            to: Some(from_public_addr.clone()),
-                                            data: Some(
-                                                serde_json::json!({ "text": "Message received" }),
-                                            ),
-                                            status: None,
-                                            protocol: Protocol::TURN,
-                                            uuid: self.db.get_or_create_peer_id().unwrap(),
-                                        };
-                                        if let Err(e) =
-                                            connection.send_packet(response_packet).await
+                                        if let Some(TransportData::Message(data)) =
+                                            packet_clone.data
                                         {
                                             println!(
                                                 "{}",
-                                                format!("[Peer] Failed to send response: {}", e)
-                                                    .red()
+                                                format!("[Peer] Message: {}", data.text).green()
                                             );
+
+                                            let response_packet = TransportPacket {
+                                                public_addr: (*self.my_public_addr).clone(),
+                                                act: "message_response".to_string(),
+                                                to: Some(from_uuid.clone()),
+                                                data: Some(TransportData::Message(Message {
+                                                    text: "Message received".to_string(),
+                                                })),
+                                                status: None,
+                                                protocol: Protocol::TURN,
+                                                uuid: self.db.get_or_create_peer_id().unwrap(),
+                                            };
+                                            if let Err(e) =
+                                                connection.send_packet(response_packet).await
+                                            {
+                                                println!(
+                                                    "{}",
+                                                    format!(
+                                                        "[Peer] Failed to send response: {}",
+                                                        e
+                                                    )
+                                                    .red()
+                                                );
+                                            }
                                         }
                                     }
                                 }
