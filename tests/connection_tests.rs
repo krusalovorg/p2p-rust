@@ -65,7 +65,6 @@ mod tests {
         let (mut socket, _) = listener.accept().await.unwrap();
 
         let test_packet = TransportPacket {
-            public_addr: "127.0.0.1:8080".to_string(),
             act: "test".to_string(),
             to: None,
             data: Some(TransportData::Message(Message { text: "test data".to_string() })),

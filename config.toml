@@ -1,3 +1,6 @@
 # signal_server_ip = "86.110.212.133"
 signal_server_ip = "127.0.0.1"
-signal_server_port = 3031
+signal_server_port = 3032
+storage_size = 1024  # 1 KB в байтах
+# other_signal_servers=[]
+other_signal_servers = ["127.0.0.1:3031"]

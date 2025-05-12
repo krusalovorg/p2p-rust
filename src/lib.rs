@@ -8,3 +8,4 @@ pub mod connection;
 pub mod manager;
 pub mod peer;
 pub mod test_db;
+pub mod crypto;

@@ -11,6 +11,7 @@ mod peer;
 mod ui;
 mod packets;
 mod manager;
+mod crypto;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;

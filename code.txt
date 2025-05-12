@@ -3,10 +3,14 @@
 === ./src\config.rs ===
 use std::fs;
 use toml;
+use serde::Deserialize;
 
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub signal_server_ip: String,
     pub signal_server_port: i64,
+    pub other_signal_servers: Vec<String>,
+    pub storage_size: u64,
 }
 
 impl Config {
@@ -16,6 +20,8 @@ impl Config {
         Self {
             signal_server_ip: config["signal_server_ip"].as_str().unwrap().to_string(),
             signal_server_port: config["signal_server_port"].as_integer().unwrap(),
+            other_signal_servers: config["other_signal_servers"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect(),
+            storage_size: config["storage_size"].as_integer().unwrap() as u64,
         }
     }
 }
@@ -30,9 +36,8 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task;
 use tokio::time::sleep;
 
-use crate::packets::{Protocol, TransportPacket};
-use crate::peer::peer_api::PeerAPI;
-use crate::GLOBAL_DB;
+use crate::packets::{Protocol, TransportPacket, TransportData, PeerInfo};
+use crate::db::P2PDatabase;
 
 #[derive(Debug)]
 pub enum Message {
@@ -47,14 +52,14 @@ pub struct Connection {
     pub tx: mpsc::Sender<Message>,
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
+    db: Arc<P2PDatabase>,
 }
 
 impl Connection {
     pub async fn new(
         signal_server_ip: String,
         signal_server_port: i64,
-        tunnel_public_ip: String,
-        tunnel_public_port: u16,
+        db: &P2PDatabase,
     ) -> Connection {
         let (tx, rx) = mpsc::channel(16);
 
@@ -68,15 +73,16 @@ impl Connection {
 
         // Отправляем пакет при создании соединения
         let connect_packet = TransportPacket {
-            public_addr: format!("{}:{}", tunnel_public_ip, tunnel_public_port),
             act: "info".to_string(),
             to: None,
             data: Some(
-                serde_json::json!({ "peer_id": &GLOBAL_DB.get_or_create_peer_id().unwrap() }),
+                TransportData::PeerInfo(PeerInfo {
+                    peer_id: db.get_or_create_peer_id().unwrap(),
+                }),
             ),
             status: None,
             protocol: Protocol::SIGNAL,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: db.get_or_create_peer_id().unwrap(),
         };
 
         if let Err(e) = Self::write_packet(&writer, &connect_packet).await {
@@ -90,11 +96,15 @@ impl Connection {
             rx,
             reader.clone(),
             writer.clone(),
-            tunnel_public_ip,
-            tunnel_public_port,
+            Arc::new(db.clone()),
         ));
 
-        Connection { tx, writer, reader }
+        Connection { 
+            tx, 
+            writer, 
+            reader,
+            db: Arc::new(db.clone()),
+        }
     }
     
     async fn write_packet(
@@ -112,7 +122,7 @@ impl Connection {
         }
 
         // Отправляем само сообщение
-        println!("[Connection] Writing packet to socket: {:?}", packet);
+        // println!("[Connection] Writing packet to socket: {:?}", packet);
         match writer.write_all(packet_str.as_bytes()).await {
             Ok(_) => {
                 println!("[Connection] Packet sent successfully");
@@ -130,14 +140,13 @@ impl Connection {
         mut rx: mpsc::Receiver<Message>,
         reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
         writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
-        tunnel_public_ip: String,
-        tunnel_public_port: u16,
+        db: Arc<P2PDatabase>,
     ) {
         println!("[Connection] Processing messages");
 
         sleep(Duration::from_millis(100)).await;
 
-        match Self::send_peer_info_request(&writer, &tunnel_public_ip, tunnel_public_port).await {
+        match Self::send_peer_info_request(&writer, &db).await {
             Ok(_) => (),
             Err(e) => {
                 println!("[Connection] Failed to send peer info request: {}", e);
@@ -170,19 +179,19 @@ impl Connection {
 
     pub async fn send_peer_info_request(
         writer: &Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
-        public_ip: &str,
-        public_port: u16,
+        db: &P2PDatabase,
     ) -> Result<(), String> {
         let connect_packet = TransportPacket {
-            public_addr: format!("{}:{}", public_ip, public_port),
-            act: "info".to_string(),//wait_connection
+            act: "info".to_string(),
             to: None,
             data: Some(
-                serde_json::json!({ "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap() }),
+                TransportData::PeerInfo(PeerInfo {
+                    peer_id: db.get_or_create_peer_id().unwrap(),
+                }),
             ),
             status: None,
             protocol: Protocol::STUN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: db.get_or_create_peer_id().unwrap(),
         };
 
         Self::write_packet(writer, &connect_packet).await
@@ -242,11 +251,23 @@ impl Connection {
 }
 
 
+=== ./src\lib.rs ===
+pub mod signal;
+pub mod config;
+pub mod packets;
+pub mod tunnel;
+pub mod db; 
+pub mod ui;
+pub mod connection;
+pub mod manager;
+pub mod peer;
+pub mod test_db;
+pub mod crypto;
+
+
 === ./src\main.rs ===
 use clap::{Arg, Command};
 use peer::Peer;
-#[macro_use]
-extern crate lazy_static;
 use std::path::PathBuf;
 
 mod config;
@@ -258,6 +279,7 @@ mod peer;
 mod ui;
 mod packets;
 mod manager;
+mod crypto;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;
@@ -276,37 +298,107 @@ fn create_command() -> Command {
             .help("Path to the database directory"))
 }
 
-lazy_static! {
-    pub static ref GLOBAL_DB: P2PDatabase = {
-        let matches = create_command().get_matches();
-
-        let db_path = matches.get_one::<String>("db-path")
-            .map(|s| s.as_str())
-            .unwrap_or("./storage");
-
-        let path = PathBuf::from(db_path);
-        if !path.exists() {
-            std::fs::create_dir_all(&path).unwrap();
-        }
-        P2PDatabase::new(path.to_str().unwrap()).unwrap()
-    };
-}
-
 #[tokio::main]
 async fn main() {
     let matches = create_command().get_matches();
 
-    print_all_files();
+    let db_path = matches.get_one::<String>("db-path")
+        .map(|s| s.as_str())
+        .unwrap_or("./storage");
+
+    let path = PathBuf::from(db_path);
+    if !path.exists() {
+        std::fs::create_dir_all(&path).unwrap();
+    }
+    let db = P2PDatabase::new(path.to_str().unwrap()).unwrap();
+
+    print_all_files(&db);
 
     if matches.get_flag("signal") {
-        let signal_server = SignalServer::new().await;
+        let signal_server = SignalServer::new(&db).await;
         signal_server.run().await;
     } else {
-        let peer = Peer::new().await;
+        let peer = Peer::new(&db).await;
         peer.run().await;
-        // run_peer().await;
     }
 }
+
+=== ./src\crypto\crypto.rs ===
+// use k256::{SecretKey, PublicKey, ecdh::SharedSecret};
+// use sha2::{Sha256, Digest};
+// use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+// use rand_core::OsRng;
+
+// // private - мой
+// // public - собеседника
+// pub fn get_shared_secret(private: str, public: str) {
+//     let shared = SharedSecret::new(private, public);
+//     let hash = Sha256::digest(shared.as_bytes());
+//     hash.into()
+// }
+
+// fn encrypt(plaintext: &[u8], key_bytes: [u8; 32]) -> (Vec<u8>, [u8; 12]) {
+//     let key = Key::from_slice(&key_bytes);
+//     let cipher = ChaCha20Poly1305::new(key);
+
+//     let mut nonce_bytes = [0u8; 12];
+//     OsRng.fill_bytes(&mut nonce_bytes);
+//     let nonce = Nonce::from_slice(&nonce_bytes);
+
+//     let ciphertext = cipher.encrypt(nonce, plaintext).expect("encryption failure!");
+//     (ciphertext, nonce_bytes)
+// }
+
+// pub fn decrypt() {
+//     let key = Key::from_slice(&key_bytes);
+//     let cipher = ChaCha20Poly1305::new(key);
+//     let nonce = Nonce::from_slice(&nonce_bytes);
+
+//     cipher.decrypt(nonce, ciphertext).expect("decryption failure!")
+// }
+
+=== ./src\crypto\mod.rs ===
+pub mod token;
+pub mod crypto;
+
+use self::token::get_metadata_from_token;
+// use crate::crypto::crypto;
+
+
+
+=== ./src\crypto\token.rs ===
+use crate::packets::StorageToken;
+use base64;
+use hex;
+use k256;
+use serde_json;
+
+pub async fn get_metadata_from_token(token: String) -> Result<StorageToken, String> {
+    let token_bytes = base64::decode(&token).map_err(|e| e.to_string())?;
+    let token_str = String::from_utf8(token_bytes).map_err(|e| e.to_string())?;
+    let token: StorageToken = serde_json::from_str(&token_str).map_err(|e| e.to_string())?;
+    Ok(token)
+}
+
+pub async fn validate_signature_token(token: String, db: &crate::db::P2PDatabase) -> Result<StorageToken, String> {
+    let token_bytes = base64::decode(&token).map_err(|e| e.to_string())?;
+    let token_str = String::from_utf8(token_bytes).map_err(|e| e.to_string())?;
+    let token: StorageToken = serde_json::from_str(&token_str).map_err(|e| e.to_string())?;
+    
+    let mut signing_key = db.get_private_key().map_err(|e| e.to_string())?;
+    let verifying_key = signing_key.verifying_key();
+    let pub_key = verifying_key.to_encoded_point(true);
+    let pub_key_hex = hex::encode(pub_key.as_bytes());
+
+    if pub_key_hex == token.storage_provider {
+        Ok(token)
+    } else {
+        Err("Invalid signature".to_string())
+    }
+}
+
+
+
 
 === ./src\db\db.rs ===
 use async_std::path::PathBuf;
@@ -315,6 +407,7 @@ use std::sync::{Arc, Mutex};
 
 use super::tables;
 
+#[derive(Clone, Debug)]
 pub struct P2PDatabase {
     pub db: Arc<Mutex<Database>>,
     pub path: String,
@@ -431,16 +524,14 @@ impl P2PDatabase {
 === ./src\db\mod.rs ===
 mod db;
 mod models;
-mod tables;
+pub mod tables;
 mod peer;
 mod secret_keys;
 mod storage;
 mod myfiles;
 mod dht;
-
 pub use db::P2PDatabase;
 pub use models::{DHTEntry, Fragment, SecretKeyInfo, Storage};
-
 
 === ./src\db\models.rs ===
 use serde::{Deserialize, Serialize};
@@ -519,7 +610,13 @@ impl P2PDatabase {
 === ./src\db\peer.rs ===
 use crate::db::tables::PEER_INFO_TABLE;
 use redb::Error;
-use uuid::Uuid;
+
+use hex::{decode as hex_decode, encode as hex_encode};
+use k256::{
+    ecdsa::SigningKey,
+    elliptic_curve::rand_core::OsRng,
+    SecretKey,
+};
 
 use super::P2PDatabase;
 
@@ -529,23 +626,52 @@ impl P2PDatabase {
         let read_txn = db.begin_read()?;
         let table = read_txn.open_table(PEER_INFO_TABLE)?;
 
-        if let Some(data) = table.get("peer_id")? {
-            Ok(String::from_utf8(data.value().to_vec()).unwrap())
+        if let Some(data) = table.get("private_key")? {
+            let priv_key_hex = String::from_utf8(data.value().to_vec()).unwrap();
+            let priv_key_bytes = hex_decode(&priv_key_hex).unwrap();
+
+            let secret =
+                SecretKey::from_bytes(priv_key_bytes.as_slice().try_into().unwrap()).unwrap();
+            let signing_key = SigningKey::from(secret);
+            let verifying_key = signing_key.verifying_key();
+            let pub_key = verifying_key.to_encoded_point(true);
+            let pub_key_hex = hex_encode(pub_key.as_bytes());
+            return Ok(pub_key_hex);
         } else {
             drop(read_txn);
 
-            let new_uuid = Uuid::new_v4().to_string();
+            let signing_key = SigningKey::random(&mut OsRng);
+            let priv_key_bytes = signing_key.to_bytes();
+            let priv_key_hex = hex_encode(priv_key_bytes);
+
+            let verifying_key = signing_key.verifying_key();
+            let pub_key = verifying_key.to_encoded_point(true);
+            let pub_key_hex = hex_encode(pub_key.as_bytes());
+
             let write_txn = db.begin_write()?;
             {
                 let mut table = write_txn.open_table(PEER_INFO_TABLE)?;
-                table.insert("peer_id", new_uuid.as_bytes())?;
+                table.insert("private_key", priv_key_hex.as_bytes())?;
             }
             write_txn.commit()?;
 
-            Ok(new_uuid)
+            Ok(pub_key_hex)
         }
     }
-} 
+
+    pub fn get_private_key(&self) -> Result<k256::ecdsa::SigningKey, Error> {
+        let db = self.db.lock().unwrap();
+        let read_txn = db.begin_read()?;
+        let table = read_txn.open_table(PEER_INFO_TABLE)?;
+
+        let data = table.get("private_key")?.ok_or_else(|| Error::Corrupted("Private key not found".to_string()))?;
+        let priv_key_hex = String::from_utf8(data.value().to_vec()).unwrap();
+        let priv_key_bytes = hex_decode(&priv_key_hex).unwrap();
+        let secret = SecretKey::from_bytes(priv_key_bytes.as_slice().try_into().unwrap()).unwrap();
+        Ok(SigningKey::from(secret))
+    }
+}
+
 
 === ./src\db\secret_keys.rs ===
 use crate::db::{models::SecretKeyInfo, tables::SECRET_KEYS_TABLE};
@@ -593,10 +719,34 @@ impl P2PDatabase {
 } 
 
 === ./src\db\storage.rs ===
-use crate::db::{models::Storage, tables::STORAGE_TABLE};
+use crate::{
+    config::Config,
+    db::{models::Storage, tables::STORAGE_TABLE},
+};
+use async_std::fs::File;
+use async_std::io::ReadExt;
+use async_std::stream::StreamExt;
 use redb::{Error, ReadableTable};
 
 use super::P2PDatabase;
+
+#[derive(Debug)]
+pub enum StorageError {
+    Redb(redb::Error),
+    Io(std::io::Error),
+}
+
+impl From<redb::Error> for StorageError {
+    fn from(err: redb::Error) -> Self {
+        StorageError::Redb(err)
+    }
+}
+
+impl From<std::io::Error> for StorageError {
+    fn from(err: std::io::Error) -> Self {
+        StorageError::Io(err)
+    }
+}
 
 impl P2PDatabase {
     pub fn add_storage_fragment(&self, fragment: Storage) -> Result<(), Error> {
@@ -646,7 +796,36 @@ impl P2PDatabase {
 
         Ok(result)
     }
-} 
+
+    pub async fn get_storage_size(&self) -> Result<u64, StorageError> {
+        let path = format!("{}/files", self.path);
+
+        if !std::path::Path::new(&path).exists() {
+            std::fs::create_dir_all(&path).unwrap();
+            return Ok(0);
+        }
+
+        let mut total_size = 0u64;
+
+        let mut entries = async_std::fs::read_dir(&path).await?;
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            let metadata = entry.metadata().await?;
+            if metadata.is_file() {
+                total_size += metadata.len();
+            }
+        }
+
+        Ok(total_size)
+    }
+
+    pub async fn get_storage_free_space(&self) -> Result<u64, StorageError> {
+        let config = Config::from_file("config.toml");
+        let free_space = config.storage_size - self.get_storage_size().await?;
+        Ok(free_space)
+    }
+}
+
 
 === ./src\db\tables.rs ===
 use redb::TableDefinition;
@@ -659,6 +838,7 @@ pub const SECRET_KEYS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new
 
 === ./src\manager\ConnectionManager.rs ===
 use crate::connection::{Connection, Message};
+use crate::db::P2PDatabase;
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::TransportPacket;
 use crate::peer::peer_api::PeerAPI;
@@ -668,42 +848,46 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
+use super::types::PeerOpenNetInfo;
+
+#[derive(Clone)]
 pub struct ConnectionManager {
     pub connections: Arc<Mutex<HashMap<String, Connection>>>,
     pub tunnels: Arc<Mutex<HashMap<String, Arc<Mutex<Tunnel>>>>>,
+    pub connections_stun: Arc<Mutex<HashMap<String, PeerOpenNetInfo>>>,
+
     pub incoming_packet_rx:
         Arc<Mutex<mpsc::Receiver<(ConnectionType, TransportPacket, Option<Arc<Connection>>)>>>,
     pub incoming_packet_tx:
         mpsc::Sender<(ConnectionType, TransportPacket, Option<Arc<Connection>>)>,
 
     pub connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
-    pub base_tunnel: Arc<Mutex<Tunnel>>,
-    pub my_public_addr: Arc<String>,
+    pub db: Arc<P2PDatabase>,
 }
 
 impl ConnectionManager {
-    pub async fn new() -> Self {
+    pub async fn new(db: &P2PDatabase) -> Self {
         let (incoming_packet_tx, incoming_packet_rx) = mpsc::channel(100);
 
         let connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
-        let tunnel = Arc::new(tokio::sync::Mutex::new(Tunnel::new().await));
-
-        let my_ip = tunnel.lock().await.get_public_ip();
-        let my_port = tunnel.lock().await.get_public_port();
-        let my_public_addr = Arc::new(format!("{}:{}", my_ip, my_port));
+        let connections_stun = Arc::new(Mutex::new(HashMap::<String, PeerOpenNetInfo>::new()));
 
         ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
+            connections_stun,
+
             incoming_packet_rx: Arc::new(Mutex::new(incoming_packet_rx)),
             incoming_packet_tx,
+
             connections_turn,
-            base_tunnel: tunnel,
-            my_public_addr,
+
+            db: Arc::new(db.clone()),
         }
     }
+
     pub async fn send_signaling_message(
         &self,
         server_address: &str,
@@ -741,14 +925,13 @@ impl ConnectionManager {
         let id_clone = id.clone();
         let connections_turn_clone = self.connections_turn.clone();
 
-        let connection_clone_for_console = connection.clone();
-        let connection_clone_for_response = connection.clone();
-        
-        let my_public_addr_clone = self.my_public_addr.clone();
-        let my_public_addr_clone_for_api = my_public_addr_clone.clone();
-
-        let api = PeerAPI::new(connection.clone(), my_public_addr_clone_for_api);
+        let api = PeerAPI::new(
+            connection.clone(),
+            &self.db,
+            &self,
+        );
         let api_clone = api.clone();
+        let db_clone = self.db.clone();
 
         tokio::spawn({
             async move {
@@ -756,6 +939,7 @@ impl ConnectionManager {
                     console_manager(
                         Arc::new(api_clone.clone()),
                         connections_turn_clone.clone(),
+                        &db_clone,
                     )
                     .await;
                 }
@@ -784,11 +968,15 @@ impl ConnectionManager {
         );
     }
 
+    pub async fn get_tunnel(&self, id: String) -> Option<Arc<Mutex<Tunnel>>> {
+        let tunnels = self.tunnels.lock().await;
+        tunnels.get(&id).cloned()
+    }
+
     pub async fn add_tunnel(&self, id: String, tunnel: Tunnel) {
         let tx = self.incoming_packet_tx.clone();
         let mut tunnels = self.tunnels.lock().await;
 
-        let id_clone = id.clone();
         let tunnel_clone = Arc::new(tokio::sync::Mutex::new(tunnel));
         let tunnel_clone_for_spawn = tunnel_clone.clone();
         tokio::spawn(async move {
@@ -825,28 +1013,211 @@ impl ConnectionManager {
 }
 
 
+=== ./src\manager\file_handler.rs ===
+use crate::connection::Connection;
+use crate::db::{Fragment, Storage};
+use super::ConnectionManager::ConnectionManager;
+use crate::packets::{
+    FileData, PeerFileSaved, PeerUploadFile, Protocol, Status, TransportData, TransportPacket
+};
+use base64;
+use colored::*;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+impl ConnectionManager {
+    pub async fn handle_file_upload(
+        &self,
+        data: PeerUploadFile,
+        connection: &Connection,
+        from_uuid: String,
+    ) -> Result<(), String> {
+        let session_key = self
+            .db
+            .generate_and_store_secret_key(&data.peer_id)
+            .unwrap();
+
+        let contents = base64::decode(&data.contents).unwrap();
+        let dir_path: String = format!("{}/files", self.db.path.as_str());
+        if !std::path::Path::new(&dir_path).exists() {
+            tokio::fs::create_dir_all(&dir_path).await.unwrap();
+        }
+        let path = format!("{}/{}", dir_path, data.filename);
+        let mut file = File::create(path).await.unwrap();
+        file.write_all(&contents).await.unwrap();
+
+        let _ = self.db.add_storage_fragment(Storage {
+            filename: data.filename.clone(),
+            session_key: session_key.clone(),
+            session: session_key.clone(),
+            owner_id: data.peer_id,
+            storage_peer_id: self.db.get_or_create_peer_id().unwrap(),
+        });
+
+        println!("{}", "[Peer] File saved".green());
+
+        let packet_feedback = TransportPacket {
+            act: "file_saved".to_string(),
+            to: Some(from_uuid),
+            data: Some(TransportData::PeerFileSaved(PeerFileSaved {
+                filename: data.filename,
+                session_key: session_key,
+                peer_id: self.db.get_or_create_peer_id().unwrap(),
+            })),
+            status: None,
+            protocol: Protocol::TURN,
+            uuid: self.db.get_or_create_peer_id().unwrap(),
+        };
+
+        connection.send_packet(packet_feedback).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn handle_file_saved(
+        &self,
+        data: PeerFileSaved,
+    ) -> Result<(), String> {
+        let session_key_clone = data.session_key.clone().to_string();
+        let _ = self.db.add_myfile_fragment(Fragment {
+            uuid_peer: data.peer_id,
+            session_key: session_key_clone.clone(),
+            session: session_key_clone.clone(),
+            filename: data.filename.clone(),
+        });
+
+        println!("{}", format!("\x1b[32m[Peer] File saved. Session key: {}\x1b[0m", session_key_clone).green());
+        Ok(())
+    }
+
+    pub async fn handle_file_get(
+        &self,
+        session_key: String,
+        connection: &Connection,
+        from_uuid: String,
+    ) -> Result<(), String> {
+        let contents = self.db.get_storage_fragments_by_key(&session_key);
+        for fragment in contents.unwrap() {
+            let dir_path = format!("{}/files", self.db.path.as_str());
+            let path = format!("{}/{}", dir_path, fragment.filename);
+            let mut file = File::open(path).await.unwrap();
+            let mut contents = vec![];
+            file.read_to_end(&mut contents).await.unwrap();
+
+            let packet_file = TransportPacket {
+                act: "file".to_string(),
+                to: Some(from_uuid.clone()),
+                data: Some(TransportData::FileData(FileData {
+                    filename: fragment.filename.clone().to_string(),
+                    contents: base64::encode(contents),
+                    peer_id: self.db.get_or_create_peer_id().unwrap(),
+                })),
+                status: Some(Status::SUCCESS),
+                protocol: Protocol::TURN,
+                uuid: self.db.get_or_create_peer_id().unwrap(),
+            };
+
+            println!("{}", format!("[Peer] Sending file: {}", fragment.filename.clone()).cyan());
+            connection.send_packet(packet_file).await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub async fn handle_file_data(
+        &self,
+        data: FileData,
+    ) -> Result<(), String> {
+        let dir_path: String = format!("{}/recive_files", self.db.path.as_str());
+        if !std::path::Path::new(&dir_path).exists() {
+            tokio::fs::create_dir_all(&dir_path).await.unwrap();
+        }
+        let path = format!("{}/{}", dir_path, data.filename);
+        let mut file = File::create(path).await.unwrap();
+        let contents = base64::decode(data.contents).unwrap();
+        file.write_all(&contents).await.unwrap();
+        println!("{}", format!("[Peer] File saved: {}", data.filename).green());
+        Ok(())
+    }
+} 
+
+=== ./src\manager\ManagerPorts.rs ===
+use super::ConnectionManager::ConnectionManager;
+
+impl ConnectionManager {
+
+    
+}
+
+
+=== ./src\manager\message_handler.rs ===
+use super::ConnectionManager::ConnectionManager;
+use crate::{
+    connection::Connection,
+    packets::{Message, Protocol, TransportData, TransportPacket},
+};
+use colored::*;
+
+impl ConnectionManager {
+    pub async fn handle_message(
+        &self,
+        data: Message,
+        connection: &Connection,
+        from_uuid: String,
+    ) -> Result<(), String> {
+        println!("{}", format!("[Peer] Message: {}", data.text).green());
+
+        let response_packet = TransportPacket {
+            act: "message_response".to_string(),
+            to: Some(from_uuid),
+            data: Some(TransportData::Message(Message {
+                text: "Message received".to_string(),
+            })),
+            status: None,
+            protocol: Protocol::TURN,
+            uuid: self.db.get_or_create_peer_id().unwrap(),
+        };
+
+        connection
+            .send_packet(response_packet)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn handle_message_response(&self) -> Result<(), String> {
+        println!("{}", "[Peer] Message sent successfully".green());
+        Ok(())
+    }
+}
+
+
 === ./src\manager\mod.rs ===
 pub mod ConnectionManager;
 pub mod ProcessPackets;
-pub mod types;
 pub mod StunManager;
+pub mod types;
+pub mod ManagerPorts;
+pub mod storage_handler;
+pub mod file_handler;
+pub mod message_handler;
 
 pub use types::ConnectionTurnStatus;
 
 === ./src\manager\ProcessPackets.rs ===
+use super::ConnectionManager::ConnectionManager;
 use crate::db::{Fragment, Storage};
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::{
-    PeerFileSaved, PeerUploadFile, Protocol, Status, SyncPeerInfoData, TransportPacket,
+    FileData, Message, PeerFileSaved, Protocol, Status, StorageReservationRequest, StorageReservationResponse, StorageToken, StorageValidTokenResponse, TransportData, TransportPacket
 };
 use crate::peer::turn_tunnel;
-use crate::GLOBAL_DB;
 use colored::Colorize;
+use hex;
+use k256;
+use k256::ecdsa::signature::SignerMut;
+use serde_json;
 use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use tokio::io::AsyncReadExt;
-use super::ConnectionManager::ConnectionManager;
+use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
 
 impl ConnectionManager {
     pub async fn handle_incoming_packets(&self) {
@@ -858,68 +1229,141 @@ impl ConnectionManager {
                 match connection_type {
                     ConnectionType::Signal(id) => {
                         if let Some(connection) = connection {
-                            println!(
-                                "{}",
-                                format!("[Peer] Received packet: {:?}", packet).yellow()
-                            );
-                            let from_public_addr = packet.public_addr.clone();
+                            println!("[DEBUG] Received signal packet: {:?}", packet);
                             let from_uuid = packet.uuid.clone();
                             let packet_clone = packet.clone();
                             let protocol_connection = packet.protocol.clone();
-                            if packet.act == "peer_list" {
-                                if let Some(data) = packet.data {
-                                    match serde_json::from_value::<SyncPeerInfoData>(data) {
-                                        Ok(peer_info_data) => {
-                                            println!("{}", "[Peer] Received peer list:".yellow());
-                                            for peer in peer_info_data.peers {
-                                                println!(
-                                                    "{}",
-                                                    format!(
-                                                    "[Peer] Peer - Public Address: {}, UUID: {}",
-                                                    peer.public_addr, peer.uuid
-                                                )
-                                                    .cyan()
-                                                );
+
+                            if let Some(data) = &packet.data {
+                                match data {
+                                    TransportData::StorageReservationRequest(request) => {
+                                        if let Err(e) = self.handle_storage_reservation_request(request.clone(), &connection).await {
+                                            println!("[Peer] Failed to handle storage reservation request: {}", e);
+                                        }
+                                    }
+                                    TransportData::StorageValidTokenRequest(token) => {
+                                        if let Err(e) = self.handle_storage_valid_token_request(token.token.clone(), &connection, from_uuid.clone()).await {
+                                            println!("[Peer] Failed to handle storage valid token request: {}", e);
+                                        }
+                                    }
+                                    TransportData::StorageValidTokenResponse(response) => {
+                                        println!("\n╔════════════════════════════════════════════════════════════╗");
+                                        println!("║                    ВАЛИДАЦИЯ ТОКЕНА ХРАНИЛИЩА                  ║");
+                                        println!("╠════════════════════════════════════════════════════════════╣");
+                                        println!("║ Статус: {} ║", 
+                                            if response.status { 
+                                                "✅ ТОКЕН ВАЛИДЕН" 
+                                            } else { 
+                                                "❌ ТОКЕН НЕВАЛИДЕН" 
+                                            }
+                                        );
+                                        println!("╚════════════════════════════════════════════════════════════╝\n");
+                                    }
+                                    TransportData::PeerSearchResponse(response) => {
+                                        println!("\n╔════════════════════════════════════════════════════════════╗");
+                                        println!("║                      РЕЗУЛЬТАТЫ ПОИСКА ПИРА                    ║");
+                                        println!("╠════════════════════════════════════════════════════════════╣");
+                                        println!("║ {} ║", format!("Статус: {}", "✅ ПИР НАЙДЕН").yellow());
+                                        println!("║ {} ║", format!("UUID пира: {}", response.peer_id).cyan());
+                                        println!("║ {} ║", format!("Адрес ноды: {}", response.public_addr).cyan());
+                                        println!("║ {} ║", format!("Прыжков: {}", response.hops).cyan());
+                                        println!("╚════════════════════════════════════════════════════════════╝\n");
+                                    }
+                                    TransportData::StorageReservationResponse(response) => {
+                                        println!("\n{}", "=".repeat(80).yellow());
+                                        println!("{}", "ВНИМАНИЕ! ВЫ ПОЛУЧИЛИ УНИКАЛЬНЫЙ ТОКЕН ДЛЯ ХРАНЕНИЯ И ПОЛУЧЕНИЯ ДАННЫХ С P2P ПИРА".red().bold());
+                                        println!("{}", "ЕСЛИ ВЫ ПОТЕРЯЕТЕ КЛЮЧ ВЫ НЕ СМОЖЕТЕ ПОЛУЧИТЬ ДОСТУП К ДАННЫМ".red().bold());
+                                        println!("{}", "=".repeat(80).yellow());
+
+                                        if let Ok(token_bytes) = base64::decode(&response.token) {
+                                            if let Ok(token_str) = String::from_utf8(token_bytes) {
+                                                if let Ok(token) = serde_json::from_str::<StorageToken>(&token_str) {
+                                                    println!("\n{}", "ДЕТАЛИ ТОКЕНА:".cyan().bold());
+                                                    println!("{} {}", "Размер файла:".yellow(), format!("{} байт", token.file_size).white());
+                                                    println!("{} {}", "Провайдер хранилища:".yellow(), token.storage_provider.white());
+                                                    println!("{} {}", "Временная метка:".yellow(), format!("{}", token.timestamp).white());
+                                                    println!("{} {}", "Подпись:".yellow(), hex::encode(&token.signature).white());
+                                                }
+                                                let path = format!("{}/tokens/{}.token", self.db.path.as_str(), response.peer_id.clone().to_string());
+                                                let tokens_dir = format!("{}/tokens", self.db.path.as_str());
+                                                if !std::path::Path::new(&tokens_dir).exists() {
+                                                    tokio::fs::create_dir_all(&tokens_dir).await.unwrap();
+                                                }    
+                                                let mut file = File::create(path).await.unwrap();
+                                                file.write_all(token_str.as_bytes()).await.unwrap();
                                             }
                                         }
-                                        Err(e) => {
-                                            println!(
-                                                "{}",
-                                                format!("[Peer] Failed to parse peer list: {}", e)
-                                                    .red()
-                                            );
-                                        }
+
+                                        println!("\n{}", "=".repeat(80).yellow());
+                                        println!("{}", "ТОКЕН В BASE64:".cyan().bold());
+                                        println!("{}", response.token.white());
+                                        println!("{}", "=".repeat(80).yellow());
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if packet.act == "peer_list" {
+                                if let Some(TransportData::SyncPeerInfoData(peer_info_data)) = packet.data {
+                                    println!("{}", "[Peer] Received peer list:".yellow());
+                                    for peer in peer_info_data.peers {
+                                        println!("{}", format!("[Peer] Peer - UUID: {}", peer.uuid).cyan());
                                     }
                                 } else {
                                     println!("{}", "[Peer] Peer list data is missing.".red());
                                 }
-                            } else if protocol_connection == Protocol::STUN
-                                && packet.act == "wait_connection"
-                            {
-                                println!("{}", format!("[Peer] [Stun] From public address: {}", from_public_addr).yellow());
-                                println!("{}", "[Peer] Start stun tunnel".yellow());
-                                let result_tunnel = self.stun_tunnel(packet).await;
-                                match result_tunnel {
-                                    Ok(_) => {
-                                        println!("{}", "[STUN] Connection established!".green());
+                            } else if protocol_connection == Protocol::STUN {
+                                println!("[DEBUG] Processing STUN packet");
+                                match packet.act.as_str() {
+                                    "wait_connection" => {
+                                        println!("[DEBUG] Received wait_connection from {}", from_uuid);
+                                        let result = self.send_wait_connection(
+                                            packet.uuid.clone(),
+                                            &connection,
+                                            self.db.get_or_create_peer_id().unwrap(),
+                                        ).await;
+
+                                        if let Err(e) = result {
+                                            println!("[DEBUG] Failed to send wait_connection: {}", e);
+                                        } else {
+                                            println!("[DEBUG] Successfully sent wait_connection");
+                                        }
                                     }
-                                    Err(e) => {
-                                        self.connections_turn.write().await.insert(
-                                            from_uuid.clone(),
-                                            ConnectionTurnStatus {
-                                                connected: false,
-                                                turn_connection: true,
-                                            },
-                                        );
-                                        println!(
-                                            "{}",
-                                            format!("[Peer] Failed to establish connection: {}", e).red()
-                                        );
+                                    "accept_connection" => {
+                                        println!("[DEBUG] Received accept_connection from {}", from_uuid);
+                                        let result = self.receive_accept_connection(
+                                            packet,
+                                            self.db.get_or_create_peer_id().unwrap(),
+                                        ).await;
+
+                                        match result {
+                                            Ok(_) => {
+                                                println!("[DEBUG] Connection established successfully");
+                                                self.connections_turn.write().await.insert(
+                                                    from_uuid.clone(),
+                                                    ConnectionTurnStatus {
+                                                        connected: true,
+                                                        turn_connection: false,
+                                                    },
+                                                );
+                                            }
+                                            Err(e) => {
+                                                println!("[DEBUG] Failed to establish connection: {}", e);
+                                                self.connections_turn.write().await.insert(
+                                                    from_uuid.clone(),
+                                                    ConnectionTurnStatus {
+                                                        connected: false,
+                                                        turn_connection: true,
+                                                    },
+                                                );
+                                            }
+                                        }
                                     }
-                                }            
-                            } else if protocol_connection == Protocol::TURN
-                                && packet.act == "wait_connection"
-                            {
+                                    _ => {
+                                        println!("[DEBUG] Unknown STUN act: {}", packet.act);
+                                    }
+                                }
+                            } else if protocol_connection == Protocol::TURN && packet.act == "wait_connection" {
                                 self.connections_turn.write().await.insert(
                                     from_uuid.clone(),
                                     ConnectionTurnStatus {
@@ -928,60 +1372,32 @@ impl ConnectionManager {
                                     },
                                 );
                             }
-                            //println from_public_addr
-                            println!("{}", format!("[Peer] From public address: {}", from_public_addr).yellow());
-                            if let Some(status) = self
-                                .connections_turn
-                                .write()
-                                .await
-                                .get_mut(&from_uuid)
-                            {
+
+                            println!("{}", format!("[Peer] From UUID: {}", from_uuid.clone()).yellow());
+                            if let Some(status) = self.connections_turn.write().await.get_mut(&from_uuid) {
                                 if status.turn_connection && !status.connected {
-                                    let result_turn_tunnel = turn_tunnel(
-                                        packet_clone,
-                                        self.my_public_addr.clone(),
-                                        &connection,
-                                    )
-                                    .await;
+                                    let result_turn_tunnel = turn_tunnel(packet_clone, &connection, &self.db).await;
                                     tokio::time::sleep(Duration::from_millis(100)).await;
-                                    println!(
-                                        "{}",
-                                        format!(
-                                            "[Peer] Result turn tunnel {:?}",
-                                            result_turn_tunnel
-                                        )
-                                        .yellow()
-                                    );
+                                    println!("{}", format!("[Peer] Result turn tunnel {:?}", result_turn_tunnel).yellow());
                                     match result_turn_tunnel {
                                         Ok(r) => {
                                             if r == "successful_connection" {
-                                                println!(
-                                                    "{}",
-                                                    "[TURN] Connection established!".green()
-                                                );
+                                                println!("{}", "[TURN] Connection established!".green());
                                                 status.connected = true;
                                                 status.turn_connection = false;
 
                                                 let packet_hello = TransportPacket {
-                                                    public_addr: (*self.my_public_addr).clone(),
                                                     act: "test_turn".to_string(),
-                                                    to: Some(from_public_addr.clone()),
+                                                    to: Some(from_uuid.clone()),
                                                     data: None,
                                                     status: None,
                                                     protocol: Protocol::TURN,
-                                                    uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+                                                    uuid: self.db.get_or_create_peer_id().unwrap(),
                                                 };
-                                                println!(
-                                                    "{}",
-                                                    "[Peer] Sending accept connection".yellow()
-                                                );
+                                                println!("{}", "[Peer] Sending accept connection".yellow());
                                                 let _ = connection.send_packet(packet_hello).await;
                                             } else if r == "send_wait_connection" {
-                                                println!(
-                                                    "{}",
-                                                    "[Peer] Wait answer acceptation connection..."
-                                                        .yellow()
-                                                );
+                                                println!("{}", "[Peer] Wait answer acceptation connection...".yellow());
                                             }
                                         }
                                         Err(e) => {
@@ -993,190 +1409,48 @@ impl ConnectionManager {
                                     println!("{}", "[Peer] Wait new packets...".yellow());
                                 } else {
                                     let packet_file_clone = packet_clone.clone();
-                                    if packet_clone.act == "save_file" {
-                                        let data = packet_file_clone.data.unwrap();
-                                        let session_key = GLOBAL_DB
-                                            .generate_and_store_secret_key(
-                                                data["peer_id"].as_str().unwrap(),
-                                            )
-                                            .unwrap();
-
-                                        let filename = data["filename"].as_str().unwrap();
-                                        let contents =
-                                            base64::decode(data["contents"].as_str().unwrap())
-                                                .unwrap();
-                                        let dir_path: String =
-                                            format!("{}/files", GLOBAL_DB.path.as_str());
-                                        if !std::path::Path::new(&dir_path).exists() {
-                                            tokio::fs::create_dir_all(&dir_path).await.unwrap();
-                                        }
-                                        let path = format!("{}/{}", dir_path, filename);
-                                        let mut file = File::create(path).await.unwrap();
-                                        file.write_all(&contents).await.unwrap();
-
-                                        let _ = GLOBAL_DB.add_storage_fragment(Storage {
-                                            filename: filename.to_string(),
-                                            session_key: session_key.clone(),
-                                            session: session_key.clone().to_string().to_string(),
-                                            owner_id: data["peer_id"].as_str().unwrap().to_string(),
-                                            storage_peer_id: GLOBAL_DB
-                                                .get_or_create_peer_id()
-                                                .unwrap(),
-                                        });
-
-                                        println!("{}", "[Peer] File saved".green());
-
-                                        let packet_feedback = TransportPacket {
-                                            public_addr: (*self.my_public_addr).clone(),
-                                            act: "file_saved".to_string(),
-                                            to: Some(from_public_addr.clone()),
-                                            data: Some(
-                                                serde_json::to_value(PeerFileSaved {
-                                                    filename: filename.to_string(),
-                                                    session_key: session_key.clone(),
-                                                    peer_id: GLOBAL_DB
-                                                        .get_or_create_peer_id()
-                                                        .unwrap(),
-                                                })
-                                                .unwrap(),
-                                            ),
-                                            status: None,
-                                            protocol: Protocol::TURN,
-                                            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                                        };
-
-                                        if let Err(e) =
-                                            connection.send_packet(packet_feedback).await
-                                        {
-                                            println!(
-                                                "{}",
-                                                format!("[Peer] Failed to send packet: {}", e)
-                                                    .red()
-                                            );
-                                        }
-                                    } else if packet_clone.act == "file_saved" {
-                                        let data = packet_clone.data.unwrap();
-                                        let filename = data["filename"].as_str().unwrap();
-                                        let session_key = data["session_key"].as_str().unwrap();
-                                        let peer_id = data["peer_id"].as_str().unwrap();
-
-                                        let _ = GLOBAL_DB.add_myfile_fragment(Fragment {
-                                            uuid_peer: peer_id.to_string(),
-                                            session_key: session_key.to_string(),
-                                            session: session_key.to_string(),
-                                            filename: filename.to_string(),
-                                        });
-
-                                        println!(
-                                            "{}",
-                                            format!(
-                                                "\x1b[32m[Peer] File saved. Session key: {}\x1b[0m",
-                                                session_key
-                                            )
-                                            .green()
-                                        );
-                                    } else if packet_clone.act == "get_file" {
-                                        println!("{}", "Get file packet".yellow());
-                                        let data = packet_file_clone.data.unwrap();
-                                        let session_key = data["session_key"].as_str().unwrap();
-                                        let contents =
-                                            GLOBAL_DB.get_storage_fragments_by_key(session_key);
-                                        for fragment in contents.unwrap() {
-                                            let dir_path =
-                                                format!("{}/files", GLOBAL_DB.path.as_str());
-                                            let path =
-                                                format!("{}/{}", dir_path, fragment.filename);
-                                            let mut file = File::open(path).await.unwrap();
-                                            let mut contents = vec![];
-                                            file.read_to_end(&mut contents).await.unwrap();
-
-                                            let peer_upload_file =
-                                                serde_json::to_value(PeerUploadFile {
-                                                    filename: fragment.filename.clone(),
-                                                    contents: base64::encode(contents),
-                                                    peer_id: GLOBAL_DB
-                                                        .get_or_create_peer_id()
-                                                        .unwrap(),
-                                                })
-                                                .unwrap();
-
-                                            let packet_file = TransportPacket {
-                                                public_addr: (*self.my_public_addr).clone(),
-                                                act: "file".to_string(),
-                                                to: Some(from_public_addr.clone()),
-                                                data: Some(peer_upload_file),
-                                                status: Some(Status::SUCCESS),
-                                                protocol: Protocol::TURN,
-                                                uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                                            };
-                                            println!(
-                                                "{}",
-                                                format!(
-                                                    "[Peer] Sending file: {}",
-                                                    fragment.filename.clone()
-                                                )
-                                                .cyan()
-                                            );
-                                            if let Err(e) =
-                                                connection.send_packet(packet_file).await
-                                            {
-                                                println!(
-                                                    "{}",
-                                                    format!("[Peer] Failed to send packet: {}", e)
-                                                        .red()
-                                                );
-                                            } else {
-                                                println!(
-                                                    "{}",
-                                                    "[Peer] Packet sent successfully".green()
-                                                );
+                                    match packet_clone.act.as_str() {
+                                        "save_file" => {
+                                            if let Some(TransportData::PeerUploadFile(data)) = packet_file_clone.data {
+                                                if let Err(e) = self.handle_file_upload(data, &connection, from_uuid.clone()).await {
+                                                    println!("[Peer] Failed to handle file upload: {}", e);
+                                                }
                                             }
                                         }
-                                    } else if packet_clone.act == "file" {
-                                        let data = packet_file_clone.data.unwrap();
-                                        let filename = data["filename"].as_str().unwrap();
-                                        let contents = data["contents"].as_str().unwrap();
-                                        let dir_path: String =
-                                            format!("{}/recive_files", GLOBAL_DB.path.as_str());
-                                        if !std::path::Path::new(&dir_path).exists() {
-                                            tokio::fs::create_dir_all(&dir_path).await.unwrap();
+                                        "file_saved" => {
+                                            if let Some(TransportData::PeerFileSaved(data)) = packet_file_clone.data {
+                                                if let Err(e) = self.handle_file_saved(data).await {
+                                                    println!("[Peer] Failed to handle file saved: {}", e);
+                                                }
+                                            }
                                         }
-                                        let path = format!("{}/{}", dir_path, filename);
-                                        let mut file = File::create(path).await.unwrap();
-                                        let contents = base64::decode(contents).unwrap();
-                                        file.write_all(&contents).await.unwrap();
-                                        println!(
-                                            "{}",
-                                            format!("[Peer] File saved: {}", filename).green()
-                                        );
-                                    } else if packet_clone.act == "message" {
-                                        let data = packet_clone.data.unwrap();
-                                        let message = data["text"].as_str().unwrap();
-                                        println!(
-                                            "{}",
-                                            format!("[Peer] Message: {}", message).green()
-                                        );
-
-                                        let response_packet = TransportPacket {
-                                            public_addr: (*self.my_public_addr).clone(),
-                                            act: "message_response".to_string(),
-                                            to: Some(from_public_addr.clone()),
-                                            data: Some(
-                                                serde_json::json!({ "text": "Message received" }),
-                                            ),
-                                            status: None,
-                                            protocol: Protocol::TURN,
-                                            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                                        };
-                                        if let Err(e) =
-                                            connection.send_packet(response_packet).await
-                                        {
-                                            println!(
-                                                "{}",
-                                                format!("[Peer] Failed to send response: {}", e)
-                                                    .red()
-                                            );
+                                        "get_file" => {
+                                            if let Some(TransportData::PeerFileGet(data)) = packet_file_clone.data {
+                                                if let Err(e) = self.handle_file_get(data.session_key, &connection, from_uuid.clone()).await {
+                                                    println!("[Peer] Failed to handle file get: {}", e);
+                                                }
+                                            }
                                         }
+                                        "file" => {
+                                            if let Some(TransportData::FileData(data)) = packet_file_clone.data {
+                                                if let Err(e) = self.handle_file_data(data).await {
+                                                    println!("[Peer] Failed to handle file data: {}", e);
+                                                }
+                                            }
+                                        }
+                                        "message_response" => {
+                                            if let Err(e) = self.handle_message_response().await {
+                                                println!("[Peer] Failed to handle message response: {}", e);
+                                            }
+                                        }
+                                        "message" => {
+                                            if let Some(TransportData::Message(data)) = packet_clone.data {
+                                                if let Err(e) = self.handle_message(data, &connection, from_uuid.clone()).await {
+                                                    println!("[Peer] Failed to handle message: {}", e);
+                                                }
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                             } else {
@@ -1197,62 +1471,215 @@ impl ConnectionManager {
 }
 
 
+=== ./src\manager\storage_handler.rs ===
+use super::ConnectionManager::ConnectionManager;
+use colored::*;
+use crate::connection::Connection;
+use crate::packets::{
+    StorageReservationRequest, StorageReservationResponse, StorageToken, StorageValidTokenResponse,
+    TransportData, TransportPacket, Protocol,
+};
+use base64;
+use hex;
+use k256;
+use k256::ecdsa::signature::SignerMut;
+use serde_json;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+
+impl ConnectionManager {
+    pub async fn handle_storage_reservation_request(
+        &self,
+        request: StorageReservationRequest,
+        connection: &Connection,
+    ) -> Result<(), String> {
+        let free_space = self.db.get_storage_free_space().await.unwrap();
+        println!("[Peer] Free space: {}", free_space);
+
+        if free_space < request.size_in_bytes {
+            println!("[Peer] Not enough storage space available");
+            return Err("Not enough storage space".to_string());
+        }
+
+        let mut signing_key = self.db.get_private_key().unwrap();
+        let verifying_key = signing_key.verifying_key();
+        let pub_key = verifying_key.to_encoded_point(true);
+        let pub_key_hex = hex::encode(pub_key.as_bytes());
+
+        let storage_token = StorageToken {
+            file_size: request.size_in_bytes as u64,
+            storage_provider: pub_key_hex,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            signature: Vec::new(),
+        };
+
+        let mut token_bytes = serde_json::to_vec(&storage_token).unwrap();
+        let signature: k256::ecdsa::Signature =
+            SignerMut::<k256::ecdsa::Signature>::sign(&mut signing_key, &token_bytes);
+
+        let mut final_token = storage_token;
+        final_token.signature = signature.to_bytes().to_vec();
+
+        let token_base64 = base64::encode(serde_json::to_vec(&final_token).unwrap());
+
+        let response = TransportPacket {
+            act: "reserve_storage_response".to_string(),
+            to: Some(request.peer_id.clone()),
+            data: Some(TransportData::StorageReservationResponse(
+                StorageReservationResponse {
+                    peer_id: self.db.get_or_create_peer_id().unwrap(),
+                    token: token_base64,
+                    size_in_bytes: request.size_in_bytes,
+                },
+            )),
+            status: None,
+            protocol: Protocol::SIGNAL,
+            uuid: self.db.get_or_create_peer_id().unwrap(),
+        };
+
+        connection.send_packet(response).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn handle_storage_valid_token_request(
+        &self,
+        token: String,
+        connection: &Connection,
+        from_uuid: String,
+    ) -> Result<(), String> {
+        let token_bytes = base64::decode(&token).unwrap();
+        let token_str = String::from_utf8(token_bytes).unwrap();
+        let token: StorageToken = serde_json::from_str(&token_str).unwrap();
+        
+        let mut signing_key = self.db.get_private_key().unwrap();
+        let verifying_key = signing_key.verifying_key();
+        let pub_key = verifying_key.to_encoded_point(true);
+        let pub_key_hex = hex::encode(pub_key.as_bytes());
+
+        let status = pub_key_hex == token.storage_provider;
+
+        let response = TransportPacket {
+            act: "storage_valid_token_response".to_string(),
+            to: Some(from_uuid),
+            data: Some(TransportData::StorageValidTokenResponse(
+                StorageValidTokenResponse {
+                    peer_id: self.db.get_or_create_peer_id().unwrap(),
+                    status,
+                },
+            )),
+            status: None,
+            protocol: Protocol::SIGNAL,
+            uuid: self.db.get_or_create_peer_id().unwrap(),
+        };
+
+        connection.send_packet(response).await.map_err(|e| e.to_string())
+    }
+} 
+
 === ./src\manager\StunManager.rs ===
-use crate::packets::TransportPacket;
-use crate::signal::SignalClient;
+use crate::connection::Connection;
+use crate::packets::{PeerWaitConnection, Protocol, TransportData, TransportPacket};
 use crate::tunnel::Tunnel;
 use anyhow::Result;
-use colored::*;
 
+use super::types::PeerOpenNetInfo;
 use super::ConnectionManager::ConnectionManager;
 
 impl ConnectionManager {
-    pub async fn stun_tunnel(&self, packet: TransportPacket) -> Result<(), String> {
-        let mut tunnel = Tunnel::new().await;
-        println!(
-            "{}",
-            format!(
-                "[STUN] Entering stun_tunnel with public address: {:?}",
-                packet.public_addr
-            )
-            .yellow()
+    pub async fn send_wait_connection(
+        &self,
+        target_uuid: String,
+        server_conn: &Connection,
+        my_key: String,
+    ) -> Result<(), String> {
+        println!("[DEBUG] Starting send_wait_connection");
+        println!("[DEBUG] Target UUID: {}", target_uuid);
+        println!("[DEBUG] My Key: {}", my_key);
+
+        let tunnel = Tunnel::new().await;
+        println!("[DEBUG] Created new tunnel with IP: {} and Port: {}", tunnel.public_ip, tunnel.public_port);
+
+        let net_info = PeerWaitConnection {
+            connect_peer_id: target_uuid.clone(),
+            public_ip: tunnel.public_ip.clone(),
+            public_port: tunnel.public_port,
+        };
+
+        println!("[DEBUG] Created net_info: {:?}", net_info);
+
+        self.connections_stun.lock().await.insert(
+            target_uuid.clone(),
+            PeerOpenNetInfo {
+                ip: net_info.public_ip.clone(),
+                port: net_info.public_port,
+            },
         );
-        let public_addr_clone = packet.public_addr.clone();
-        match SignalClient::extract_addr(public_addr_clone).await {
-            Ok((ip, port)) => {
-                let ip = ip.to_string();
-                println!(
-                    "{}",
-                    format!("[STUN] Try connecting to {}:{}", ip, port).yellow()
-                );
-                match tunnel.make_connection(&ip, port, 3).await {
+
+        println!("[DEBUG] Added connection to STUN connections map");
+
+        self.add_tunnel(target_uuid.clone(), tunnel).await;
+        println!("[DEBUG] Added tunnel to tunnels map");
+
+        let packet = TransportPacket {
+            act: "accept_connection".to_string(),
+            to: Some(target_uuid.clone()),
+            data: Some(TransportData::PeerWaitConnection(net_info)),
+            status: None,
+            protocol: Protocol::STUN,
+            uuid: my_key.clone(),
+        };
+
+        println!("[DEBUG] Sending accept_connection packet: {:?}", packet);
+
+        server_conn
+            .send_packet(packet)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn receive_accept_connection(
+        &self,
+        packet: TransportPacket,
+        my_key: String,
+    ) -> Result<(), String> {
+        println!("[DEBUG] Starting receive_accept_connection");
+        println!("[DEBUG] Received packet: {:?}", packet);
+        println!("[DEBUG] My Key: {}", my_key);
+
+        if let Some(TransportData::PeerWaitConnection(data)) = packet.data {
+            let ip = data.public_ip.clone();
+            let port = data.public_port;
+            println!("[DEBUG] Target IP: {}, Port: {}", ip, port);
+
+            let tunnel_opt = self.get_tunnel(packet.uuid.clone()).await;
+            println!("[DEBUG] Got tunnel for UUID {}: {:?}", packet.uuid, tunnel_opt.is_some());
+
+            if let Some(tunnel_arc) = tunnel_opt {
+                println!("[DEBUG] Attempting connection to {}:{}", ip, port);
+                
+                let mut tunnel_guard = tunnel_arc.lock().await;
+                
+                match tunnel_guard.make_connection(&ip, port, 3).await {
                     Ok(()) => {
-                        println!(
-                            "{}",
-                            format!("[STUN] Connection established with {}:{}!", ip, port).green()
-                        );
-                        tunnel.backlife_cycle(3);
-                        self.add_tunnel(packet.public_addr.clone(), tunnel);
-                        return Ok(());
+                        tunnel_guard.backlife_cycle(3);
+                        drop(tunnel_guard);
+                        println!("[DEBUG] Successfully established connection");
+                        Ok(())
                     }
                     Err(e) => {
-                        drop(tunnel);
-                        println!(
-                            "{}",
-                            format!("[STUN] Failed to make connection: {}", e).red()
-                        );
-                        return Err("[STUN] Fail connection".to_string());
+                        println!("[DEBUG] Connection failed: {}", e);
+                        Err("[STUN] Fail connection".to_string())
                     }
                 }
+            } else {
+                println!("[DEBUG] No tunnel found for UUID: {}", packet.uuid);
+                Err("[STUN] error get tunnel".to_string())
             }
-            Err(e) => {
-                drop(tunnel);
-                println!(
-                    "{}",
-                    format!("[STUN] Failed to extract address: {}", e).red()
-                );
-                return Err("[STUN] Fail extract address".to_string());
-            }
+        } else {
+            println!("[DEBUG] Invalid packet data format");
+            Err("[STUN] Invalid accept_connection packet".to_string())
         }
     }
 }
@@ -1270,6 +1697,13 @@ pub enum ConnectionType {
     Stun,
 }
 
+#[derive(Debug, Clone)]
+pub struct PeerOpenNetInfo {
+    pub ip: String,
+    pub port: u16,
+}
+
+
 === ./src\packets\mod.rs ===
 pub mod packets;
 
@@ -1277,45 +1711,44 @@ pub use packets::*;
 
 
 === ./src\packets\packets.rs ===
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerInfo {
     pub peer_id: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerWaitConnection {
-    pub peer_id: String,
     pub connect_peer_id: String,
+    pub public_ip: String,
+    pub public_port: u16
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerFileSaved {
     pub peer_id: String,
     pub filename: String,
     pub session_key: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerFileGet {
     pub peer_id: String,
-    pub filename: String,
     pub session_key: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerUploadFile {
     pub peer_id: String,
     pub filename: String,
     pub contents: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SyncPeerInfo {
-    pub public_addr: String,
     pub uuid: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SyncPeerInfoData {
     pub peers: Vec<SyncPeerInfo>,
 }
@@ -1333,25 +1766,118 @@ pub enum Status {
     SUCCESS,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct Message {
+    pub text: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct FileData {
+    pub filename: String,
+    pub contents: String,
+    pub peer_id: String,
+}
+
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StunSyncPubAddr {
+    pub public_addr: String
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageValidTokenRequest {
+    pub token: String,
+    pub peer_id: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageValidTokenResponse {
+    pub peer_id: String,
+    pub status: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageReservationRequest {
+    pub peer_id: String,
+    pub size_in_bytes: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageToken {
+    pub file_size: u64,                  // Размер файла
+    pub storage_provider: String,      // Паблик-ключ (или крипто-адрес) хранителя
+    pub timestamp: u64,                  // Unix-время создания токена
+    pub signature: Vec<u8>,              // Подпись хранителя, подтверждающая согласие
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageReservationResponse {
+    pub peer_id: String,
+    pub token: String,  // base64 encoded StorageToken
+    pub size_in_bytes: u64,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+pub struct PeerSearchRequest {
+    pub search_id: String, // id поиска
+    pub peer_id: String, // id пира инициатора поиска
+    pub max_hops: u32, // максимальное количество прыжков
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+pub struct PeerSearchResponse {
+    pub search_id: String, // id поиска
+    pub peer_id: String, // id пира инициатора поиска
+    pub found_peer_id: String, // id пира найденного
+    pub public_addr: String, // публичный адрес ноды пира
+    pub hops: u32, // количество прыжков
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+pub enum TransportData {
+    Message(Message),
+    PeerInfo(PeerInfo),
+    PeerWaitConnection(PeerWaitConnection),
+    PeerFileGet(PeerFileGet),
+    PeerUploadFile(PeerUploadFile),
+    SyncPeerInfoData(SyncPeerInfoData),
+    StorageReservationRequest(StorageReservationRequest),
+    StorageReservationResponse(StorageReservationResponse),
+    StorageValidTokenRequest(StorageValidTokenRequest),
+    StorageValidTokenResponse(StorageValidTokenResponse),
+    PeerFileSaved(PeerFileSaved),
+    StunSyncPubAddr(StunSyncPubAddr),
+    FileData(FileData),
+    PeerSearchRequest(PeerSearchRequest),
+    PeerSearchResponse(PeerSearchResponse),
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct TransportPacket {
-    pub public_addr: String, //к кому будет пытаться подключиться пир
-    pub act: String, //info, answer, wait_connection,
-    pub to: Option<String>, //кому отправляем данный пакет
-    pub data: Option<serde_json::Value>,
+    pub act: String,         //info, answer, wait_connection,
+    pub to: Option<String>,  //кому отправляем данный пакет
+    pub data: Option<TransportData>,
     pub status: Option<Status>, // success, falied
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
-    pub uuid: String
+    pub uuid: String,
+}
+
+impl std::fmt::Display for TransportPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "TransportPacket {{ act: {}, to: {:?}, protocol: {:?}, uuid: {} }}",
+            self.act, self.to, self.protocol, format!("{:?}...{:?}", &self.uuid[0..5], &self.uuid[30..])
+        )
+    }
 }
 
 === ./src\peer\mod.rs ===
-mod stun;
 mod turn;
 pub mod peer;
 pub mod peer_api;
 mod types;
 
-pub use stun::stun_tunnel;
 pub use turn::turn_tunnel;
 pub use peer::Peer;
 pub use types::ConnectionTurnStatus;
@@ -1359,53 +1885,28 @@ pub use types::ConnectionTurnStatus;
 === ./src\peer\peer.rs ===
 use colored::*;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::config::Config;
 use crate::connection::Connection;
 use crate::manager::ConnectionManager::ConnectionManager;
-use crate::tunnel::Tunnel;
-use crate::GLOBAL_DB;
+use crate::db::P2PDatabase;
 
 pub struct Peer {
     connection_manager: Arc<ConnectionManager>,
     connection: Arc<Connection>,
-    tunnel: Arc<Mutex<Tunnel>>,
-    my_public_addr: String,
+    db: Arc<P2PDatabase>,
 }
 
 impl Peer {
-    pub async fn new() -> Self {
+    pub async fn new(db: &P2PDatabase) -> Self {
         let config: Config = Config::from_file("config.toml");
-        let tunnel = Arc::new(Mutex::new(Tunnel::new().await));
-        let connection_manager = Arc::new(ConnectionManager::new().await);
-
-        {
-            let tunnel_guard = tunnel.lock().await;
-            println!(
-                "{}",
-                format!(
-                    "[Peer] You public ip:port: {}:{}",
-                    tunnel_guard.get_public_ip(),
-                    tunnel_guard.get_public_port()
-                )
-                .yellow()
-            );
-        }
-
-        let (tunnel_public_ip, tunnel_public_port) = {
-            let tunnel_guard = tunnel.lock().await;
-            (tunnel_guard.get_public_ip(), tunnel_guard.get_public_port())
-        };
-
-        let my_public_addr = format!("{}:{}", tunnel_public_ip, tunnel_public_port);
+        let connection_manager = Arc::new(ConnectionManager::new(db).await);
 
         let connection = Arc::new(
             Connection::new(
                 config.signal_server_ip.clone(),
                 config.signal_server_port,
-                tunnel_public_ip,
-                tunnel_public_port,
+                db,
             )
             .await,
         );
@@ -1420,13 +1921,12 @@ impl Peer {
         Peer {
             connection_manager,
             connection,
-            tunnel,
-            my_public_addr,
+            db: Arc::new(db.clone()),
         }
     }
 
     pub async fn run(&self) {
-        let peer_id = GLOBAL_DB.get_or_create_peer_id().unwrap();
+        let peer_id = self.db.get_or_create_peer_id().unwrap();
         println!("{}", format!("[Peer] Your UUID: {}", peer_id).yellow());
 
         println!("[Peer] Starting peer...");
@@ -1437,57 +1937,67 @@ impl Peer {
 
 
 === ./src\peer\peer_api.rs ===
-use std::sync::Arc;
-use serde_json::json;
 use crate::connection::Connection;
-use crate::packets::{Protocol, TransportPacket};
-use crate::GLOBAL_DB;
+use crate::crypto::token::get_metadata_from_token;
+use crate::db::P2PDatabase;
+use crate::manager::ConnectionManager::ConnectionManager;
+use crate::packets::{
+    Message, PeerFileGet, PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol,
+    StorageReservationRequest, StorageValidTokenRequest, TransportData, TransportPacket,
+};
+use crate::tunnel::Tunnel;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct PeerAPI {
     connection: Arc<Connection>,
-    my_public_addr: Arc<String>,
+    db: Arc<P2PDatabase>,
+    manager: Arc<ConnectionManager>,
 }
 
 impl PeerAPI {
-    pub fn new(connection: Arc<Connection>, my_public_addr: Arc<String>) -> Self {
+    pub fn new(connection: Arc<Connection>, db: &P2PDatabase, manager: &ConnectionManager) -> Self {
         PeerAPI {
             connection,
-            my_public_addr,
+            db: Arc::new(db.clone()),
+            manager: Arc::new(manager.clone()),
         }
     }
 
     pub async fn get_file(&self, peer_id: String, session_key: String) -> Result<(), String> {
         let packet = TransportPacket {
-            public_addr: self.my_public_addr.to_string(),
             act: "get_file".to_string(),
             to: Some(peer_id),
-            data: Some(json!({"session_key": session_key})),
+            data: Some(TransportData::PeerFileGet(PeerFileGet {
+                session_key: session_key,
+                peer_id: self.db.get_or_create_peer_id().unwrap(),
+            })),
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         self.connection.send_packet(packet).await
     }
 
     pub async fn upload_file(&self, peer_id: String, file_path: String) -> Result<(), String> {
-        let contents = tokio::fs::read(&file_path).await.map_err(|e| e.to_string())?;
-        
-        let peer_upload_file = json!({
-            "filename": file_path,
-            "contents": base64::encode(contents),
-            "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap(),
-        });
+        let contents = tokio::fs::read(&file_path)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let my_peer_id = self.db.get_or_create_peer_id().unwrap();
 
         let packet = TransportPacket {
-            public_addr: self.my_public_addr.to_string(),
             act: "save_file".to_string(),
             to: Some(peer_id),
-            data: Some(peer_upload_file),
+            data: Some(TransportData::PeerUploadFile(PeerUploadFile {
+                filename: file_path,
+                contents: base64::encode(contents),
+                peer_id: my_peer_id.clone().to_string(),
+            })),
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: my_peer_id.clone().to_string(),
         };
 
         self.connection.send_packet(packet).await
@@ -1495,30 +2005,33 @@ impl PeerAPI {
 
     pub async fn send_message(&self, peer_id: String, message: String) -> Result<(), String> {
         let packet = TransportPacket {
-            public_addr: self.my_public_addr.to_string(),
             act: "message".to_string(),
             to: Some(peer_id),
-            data: Some(json!({"text": message})),
+            data: Some(TransportData::Message(Message { text: message })),
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         self.connection.send_packet(packet).await
     }
 
     pub async fn connect_to_peer(&self, peer_id: String) -> Result<(), String> {
+        let tunnel = Tunnel::new().await;
+        let tunnel_ip = tunnel.public_ip.clone();
+        let tunnel_port = tunnel.public_port.clone();
+        self.manager.add_tunnel(peer_id.to_string(), tunnel).await;
         let packet = TransportPacket {
-            public_addr: self.my_public_addr.to_string(),
             act: "wait_connection".to_string(),
             to: None,
-            data: Some(json!({
-                "connect_peer_id": peer_id,
-                "peer_id": GLOBAL_DB.get_or_create_peer_id().unwrap()
+            data: Some(TransportData::PeerWaitConnection(PeerWaitConnection {
+                connect_peer_id: peer_id,
+                public_port: tunnel_port,
+                public_ip: tunnel_ip,
             })),
             status: None,
             protocol: Protocol::STUN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         self.connection.send_packet(packet).await
@@ -1526,89 +2039,90 @@ impl PeerAPI {
 
     pub async fn request_peer_list(&self) -> Result<(), String> {
         let packet = TransportPacket {
-            public_addr: self.my_public_addr.to_string(),
             act: "peer_list".to_string(),
             to: None,
             data: None,
             status: None,
             protocol: Protocol::SIGNAL,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
+        };
+        println!("{}", format!("[Peer] Sending peer list to signal server"));
+        self.connection.send_packet(packet).await
+    }
+
+    pub async fn reserve_storage(&self, size_in_bytes: u64) -> Result<(), String> {
+        let packet = TransportPacket {
+            act: "reserve_storage".to_string(),
+            to: None,
+            data: Some(TransportData::StorageReservationRequest(
+                StorageReservationRequest {
+                    peer_id: self.db.get_or_create_peer_id().unwrap(),
+                    size_in_bytes,
+                },
+            )),
+            status: None,
+            protocol: Protocol::SIGNAL,
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         self.connection.send_packet(packet).await
     }
-} 
 
-=== ./src\peer\stun.rs ===
-use anyhow::Result;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use colored::*;
-use crate::packets::TransportPacket;
-use crate::signal::SignalClient;
-use crate::tunnel::Tunnel;
+    pub async fn valid_token(&self, token: String) -> Result<(), String> {
+        let metadata = get_metadata_from_token(token.clone().to_string()).await;
 
-pub async fn stun_tunnel(
-    packet: TransportPacket,
-    tunnel: Arc<Mutex<Tunnel>>,
-) -> Result<(), String> {
-    println!(
-        "{}",
-        format!("[STUN] Entering stun_tunnel with public address: {:?}", packet.public_addr).yellow()
-    );
-    match SignalClient::extract_addr(packet.public_addr).await {
-        Ok((ip, port)) => {
-            let ip = ip.to_string();
-            let mut tunnel = tunnel.lock().await;
-            println!("{}", format!("[STUN] Try connecting to {}:{}", ip, port).yellow());
-            match tunnel.make_connection(&ip, port, 3).await {
-                Ok(()) => {
-                    println!("{}", format!("[STUN] Connection established with {}:{}!", ip, port).green());
-                    tunnel.backlife_cycle(1);
+        if let Ok(metadata) = metadata {
+            let packet = TransportPacket {
+                act: "valid_token".to_string(),
+                to: Some(metadata.storage_provider),
+                data: Some(TransportData::StorageValidTokenRequest(
+                    StorageValidTokenRequest {
+                        token: token.clone(),
+                        peer_id: self.db.get_or_create_peer_id().unwrap(),
+                    },
+                )),
+                status: None,
+                protocol: Protocol::SIGNAL,
+                uuid: self.db.get_or_create_peer_id().unwrap(),
+            };
 
-                    loop {
-                        let mut input = String::new();
-                        std::io::stdin().read_line(&mut input).unwrap();
-                        let trimmed_input = input.trim();
-
-                        if trimmed_input.starts_with("file ") {
-                            let file_path = trimmed_input.strip_prefix("file ").unwrap();
-                            println!("{}", format!("[STUN] Sending file: {}", file_path).cyan());
-                            tunnel.send_file_path(file_path).await;
-                        } else {
-                            tunnel.send_message(trimmed_input).await;
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("{}", format!("[STUN] Failed to make connection: {}", e).red());
-                    return Err("[STUN] Fail connection".to_string());
-                }
-            }
+            self.connection.send_packet(packet).await
+        } else {
+            Err("Invalid token".to_string())
         }
-        Err(e) => {
-            println!("{}", format!("[STUN] Failed to extract address: {}", e).red());
-            return Err("[STUN] Fail extract address".to_string());
-        }
+    }
+
+    pub async fn search_peer(&self, peer_id: String) -> Result<(), String> {
+        let packet = TransportPacket {
+            act: "search_peer".to_string(),
+            to: None,
+            data: Some(TransportData::PeerSearchRequest(PeerSearchRequest {
+                peer_id: self.db.get_or_create_peer_id().unwrap(),
+                search_id: peer_id,
+                max_hops: 3,
+            })),
+            status: None,
+            protocol: Protocol::SIGNAL,
+            uuid: self.db.get_or_create_peer_id().unwrap(),
+        };
+
+        self.connection.send_packet(packet).await
     }
 }
 
 
 === ./src\peer\turn.rs ===
 use anyhow::Result;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use colored::*;
 
 use crate::connection::Connection;
 use crate::packets::{Protocol, TransportPacket};
-use crate::tunnel::Tunnel;
-use crate::GLOBAL_DB;
+use crate::db::P2PDatabase;
 
 pub async fn turn_tunnel(
     packet: TransportPacket,
-    my_public_addr: Arc<String>,
     signal: &Connection,
+    db: &P2PDatabase,
 ) -> Result<String, String> {
 
     println!(
@@ -1617,13 +2131,12 @@ pub async fn turn_tunnel(
     );
     if packet.act == "wait_connection" {
         let packet_hello = TransportPacket {
-            public_addr: my_public_addr.clone().to_string(),
             act: "try_turn_connection".to_string(),
-            to: Some(packet.public_addr.clone().to_string()),
+            to: Some(packet.uuid.clone().to_string()),
             data: None,
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: db.get_or_create_peer_id().unwrap(),
         };
         let result = signal.send_packet(packet_hello).await;
         println!(
@@ -1640,13 +2153,12 @@ pub async fn turn_tunnel(
         }
     } else if packet.act == "accept_connection" || packet.act == "try_turn_connection" {
         let packet_hello = TransportPacket {
-            public_addr: my_public_addr.clone().to_string(),
             act: "accept_connection".to_string(),
-            to: Some(packet.public_addr.to_string()),
+            to: Some(packet.uuid.to_string()),
             data: None,
             status: None,
             protocol: Protocol::TURN,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: db.get_or_create_peer_id().unwrap(),
         };
         println!("{}", "[TURN] [accept_connection] Sending accept connection".yellow());
         let result = signal.send_packet(packet_hello).await;
@@ -1671,12 +2183,11 @@ pub struct ConnectionTurnStatus {
 } 
 
 === ./src\signal\client.rs ===
-use crate::packets::PeerInfo;
-use crate::packets::{Protocol, TransportPacket};
-use crate::GLOBAL_DB;
+use crate::db::P2PDatabase;
+use crate::packets::{PeerInfo, Protocol, TransportData, TransportPacket};
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::io::{AsyncWriteExt, split};
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
 
@@ -1689,20 +2200,29 @@ struct Peer {
 type PeersSender = mpsc::Sender<Peer>;
 type PeersReceiver = mpsc::Receiver<Peer>;
 
+#[derive(Debug)]
 pub struct SignalClient {
     writer: Option<Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>>,
     reader: Option<Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>>,
+    db: Arc<P2PDatabase>,
+    message_tx: mpsc::Sender<TransportPacket>,
+    message_rx: Option<mpsc::Receiver<TransportPacket>>,
 }
 
 impl SignalClient {
-    pub fn new() -> Self {
-        // let config: Config = Config::from_file("config.toml");
-        // let signal_server_port = config.signal_server_port;
-
+    pub fn new(db: &P2PDatabase) -> Self {
+        let (message_tx, message_rx) = mpsc::channel(100);
         SignalClient {
             writer: None,
             reader: None,
+            db: Arc::new(db.clone()),
+            message_tx,
+            message_rx: Some(message_rx),
         }
+    }
+
+    pub fn get_message_receiver(&mut self) -> Option<mpsc::Receiver<TransportPacket>> {
+        self.message_rx.take()
     }
 
     pub async fn connect(
@@ -1723,33 +2243,70 @@ impl SignalClient {
                 self.writer = Some(Arc::new(RwLock::new(writer)));
                 self.reader = Some(Arc::new(RwLock::new(reader)));
 
-                let peer_info = serde_json::to_value(PeerInfo {
-                    peer_id: GLOBAL_DB.get_or_create_peer_id().unwrap(),
-                }).unwrap();
+                // Запускаем обработчик входящих сообщений
+                let reader = self.reader.as_ref().unwrap().clone();
+                let db = self.db.clone();
+                let message_tx = self.message_tx.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0; 1024];
+                    loop {
+                        let mut reader_guard = reader.write().await;
+                        
+                        // Читаем длину сообщения (4 байта)
+                        let mut len_bytes = [0u8; 4];
+                        match reader_guard.read_exact(&mut len_bytes).await {
+                            Ok(_) => {
+                                let message_len = u32::from_be_bytes(len_bytes) as usize;
+                                
+                                // Читаем само сообщение
+                                let mut message_bytes = vec![0u8; message_len];
+                                match reader_guard.read_exact(&mut message_bytes).await {
+                                    Ok(_) => {
+                                        let message = String::from_utf8_lossy(&message_bytes);
+                                        println!("[SignalClient] Received message: {}", message);
+                                        if let Ok(packet) = serde_json::from_str::<TransportPacket>(&message) {
+                                            println!("[SignalClient] Parsed packet: {:?}", packet);
+                                            
+                                            // Отправляем пакет в канал для обработки
+                                            if let Err(e) = message_tx.send(packet).await {
+                                                println!("[SignalClient] Failed to send packet to handler: {}", e);
+                                                break;
+                                            }
+                                        } else {
+                                            println!("[SignalClient] Failed to parse packet: {}", message);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("[SignalClient] Error reading message: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if e.kind() == std::io::ErrorKind::ConnectionReset {
+                                    println!("[SignalClient] Connection closed by server");
+                                    break;
+                                }
+                                println!("[SignalClient] Error reading message length: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                });
 
+                // Отправляем начальный пакет
                 let connect_packet = TransportPacket {
-                    public_addr: format!("{}:{}", public_ip, public_port),
                     act: "info".to_string(),
                     to: None,
-                    data: Some(peer_info),
+                    data: Some(TransportData::PeerInfo(PeerInfo {
+                        peer_id: self.db.get_or_create_peer_id().unwrap(),
+                    })),
                     status: None,
                     protocol: Protocol::SIGNAL,
-                    uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+                    uuid: self.db.get_or_create_peer_id().unwrap(),
                 };
 
-                let connect_packet = serde_json::to_string(&connect_packet).unwrap();
-
-                if let Some(writer) = &self.writer {
-                    writer
-                        .write()
-                        .await
-                        .write_all(connect_packet.as_bytes())
-                        .await
-                        .map_err(|e| {
-                            println!("[SignalClient] Failed to send connect packet: {}", e);
-                            e.to_string()
-                        })?;
-                }
+                self.send_packet(connect_packet).await?;
 
                 Ok(())
             }
@@ -1762,85 +2319,90 @@ impl SignalClient {
 
     pub async fn send_packet(&self, packet: TransportPacket) -> Result<(), String> {
         let string_packet = serde_json::to_string(&packet).unwrap();
-
-        if self.writer.is_none() {
-            return Err("[SignalClient] Writer is not connected".to_string());
-        } else {
-            println!("[SignalClient] Writer is connected");
-        }
+        let message_len = string_packet.len() as u32;
+        let len_bytes = message_len.to_be_bytes();
 
         if let Some(writer) = &self.writer {
-            println!("[SignalClient] Sending turn data to signal server: {}", string_packet);
+            println!(
+                "[SignalClient] Sending packet to signal server: {}",
+                string_packet
+            );
 
-            let result = writer
-                .clone()
-                .write_owned()
-                .await
-                .write_all(string_packet.as_bytes())
-                .await;
-
-            println!("[SignalClient] Packet sent: {}", string_packet);
-
-            match result {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e.to_string()),
+            let mut writer_guard = writer.write().await;
+            
+            // Отправляем длину сообщения
+            match writer_guard.write_all(&len_bytes).await {
+                Ok(_) => {
+                    // Отправляем само сообщение
+                    match writer_guard.write_all(string_packet.as_bytes()).await {
+                        Ok(_) => {
+                            println!("[SignalClient] Successfully sent packet");
+                            Ok(())
+                        }
+                        Err(e) => {
+                            println!("[SignalClient] Failed to send packet: {}", e);
+                            Err(e.to_string())
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("[SignalClient] Failed to send packet length: {}", e);
+                    Err(e.to_string())
+                }
             }
         } else {
-            Err("[SignalClient] Writer error".to_string())
+            println!("[SignalClient] Writer is not connected");
+            Err("[SignalClient] Writer is not connected".to_string())
         }
-    }
-
-    pub async fn extract_addr(public_addr: String) -> Result<(String, u16), String> {
-        let parts: Vec<&str> = public_addr.split(':').collect();
-
-        if parts.len() != 2 {
-            return Err(format!("Invalid peer info received: {}", public_addr));
-        }
-
-        let ip = parts[0].to_string();
-        let port: u16 = parts[1]
-            .parse()
-            .map_err(|e: std::num::ParseIntError| e.to_string())?;
-
-        Ok((ip, port))
     }
 }
 
 
 === ./src\signal\mod.rs ===
-mod client;
-mod server;
+pub mod client;
+pub mod server;
 
 pub use self::client::SignalClient;
 pub use self::server::SignalServer;
 
 === ./src\signal\server\mod.rs ===
-mod server;
+pub mod server;
 mod peer;
+pub mod peer_search;
 
 pub use self::server::SignalServer;
 pub use self::peer::Peer;
 
 === ./src\signal\server\peer.rs ===
+use async_std::sync::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, split}; // Добавляем split
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt}; // Добавляем split
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, mpsc}; // Добавляем mpsc
+use tokio::sync::{mpsc, RwLock}; // Добавляем mpsc
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InfoPeer {
-    pub wait_connection: RwLock<bool>,
-    pub public_addr: RwLock<String>,
+    pub wait_connection: Arc<RwLock<bool>>,
+    pub public_addr: Arc<RwLock<String>>,
     pub local_addr: String,
-    pub uuid: RwLock<Option<String>>,
+    pub uuid: Arc<RwLock<Option<String>>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct PeerOpenNetInfo {
+    pub ip: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone)]
 pub struct Peer {
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>, // Добавляем reader
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>, // Добавляем writer
-    pub info: InfoPeer,              // Peer information (ip:port)
-    tx: mpsc::Sender<String>,        // Добавляем Sender для отправки сообщений
+    pub info: InfoPeer,                                  // Peer information (ip:port)
+    tx: mpsc::Sender<String>,                            // Добавляем Sender для отправки сообщений
+
+    open_tunnels: Arc<RwLock<HashMap<String, PeerOpenNetInfo>>>,
 }
 
 impl Peer {
@@ -1849,12 +2411,14 @@ impl Peer {
 
         if info.is_none() {
             info = Some(InfoPeer {
-                wait_connection: RwLock::new(false),
-                public_addr: RwLock::new("".to_string()),
+                wait_connection: Arc::new(RwLock::new(false)),
+                public_addr: Arc::new(RwLock::new("".to_string())),
                 local_addr: socket.peer_addr().unwrap().to_string(),
-                uuid: RwLock::new(None),
+                uuid: Arc::new(RwLock::new(None)),
             });
         }
+
+        let open_tunnels = Arc::new(RwLock::new(HashMap::<String, PeerOpenNetInfo>::new()));
 
         let (reader, writer) = split(socket);
         let reader = Arc::new(RwLock::new(reader));
@@ -1866,54 +2430,70 @@ impl Peer {
             writer,
             info: info.unwrap(),
             tx,
+            open_tunnels,
         })
     }
 
     pub async fn send_data(&self, message: &str) {
         let message_len = message.len() as u32;
         let len_bytes = message_len.to_be_bytes();
-        
+
         let mut writer = self.writer.write().await;
-        
+
         // Отправляем длину сообщения (4 байта)
         if let Err(e) = writer.write_all(&len_bytes).await {
-            println!("Failed to send message length to peer {}: {}", self.info.local_addr, e);
+            println!(
+                "Failed to send message length to peer {}: {}",
+                self.info.local_addr, e
+            );
             return;
         }
-        
+
         // Отправляем само сообщение
         if let Err(e) = writer.write_all(message.as_bytes()).await {
-            println!("Failed to send message to peer {}: {}", self.info.local_addr, e);
+            println!(
+                "Failed to send message to peer {}: {}",
+                self.info.local_addr, e
+            );
         } else {
-            println!("[SendData] Message sent to peer {}: {}", self.info.local_addr, message);
+            println!(
+                "[SendData] Message sent to peer {}: {}",
+                self.info.local_addr, message
+            );
         }
     }
 
     pub async fn receive_message(&self) -> Result<String, String> {
         let mut reader = self.reader.write().await;
-        
+
         // Читаем длину сообщения (4 байта)
         let mut len_bytes = [0u8; 4];
         match reader.read_exact(&mut len_bytes).await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::ConnectionReset {
                     println!("Peer {} disconnected", self.info.local_addr);
                     return Err("Peer disconnected".to_string());
                 }
-                println!("Error reading message length from peer {}: {}", self.info.local_addr, e);
+                println!(
+                    "Error reading message length from peer {}: {}",
+                    self.info.local_addr, e
+                );
                 return Err(e.to_string());
             }
         }
-        
+
         let message_len = u32::from_be_bytes(len_bytes) as usize;
-        
+
         // Читаем само сообщение
         let mut message_bytes = vec![0u8; message_len];
         match reader.read_exact(&mut message_bytes).await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
-                println!("Error reading message from peer {}: {}", self.info.local_addr, e);
+                println!(
+                    "Error reading message from peer {}: {}",
+                    self.info.local_addr, e
+                );
                 return Err(e.to_string());
             }
         }
@@ -1921,10 +2501,27 @@ impl Peer {
         match String::from_utf8(message_bytes) {
             Ok(message) => Ok(message),
             Err(e) => {
-                println!("Error converting message to string from peer {}: {}", self.info.local_addr, e);
+                println!(
+                    "Error converting message to string from peer {}: {}",
+                    self.info.local_addr, e
+                );
                 Err(e.to_string())
             }
         }
+    }
+
+    pub async fn add_open_tunnel(&self, peer_id: &str, ip: String, port: u16) {
+        let mut open_tunnels = self.open_tunnels.write().await;
+        open_tunnels.insert(peer_id.to_string(), PeerOpenNetInfo { ip, port });
+    }
+
+    pub async fn get_open_tunnel(&self, peer_id: &str) -> Option<PeerOpenNetInfo> {
+        let open_tunnels = self.open_tunnels.read().await;
+        open_tunnels.get(peer_id).cloned()
+    }
+
+    pub async fn get_key(&self) -> Option<String> {
+        return self.info.uuid.read().await.clone();
     }
 
     pub async fn set_wait_connection(&self, wait_connection_new: bool) {
@@ -1953,6 +2550,208 @@ impl Peer {
 }
 
 
+=== ./src\signal\server\peer_search.rs ===
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
+use uuid::Uuid;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use crate::packets::{PeerInfo, PeerSearchRequest, PeerSearchResponse, Protocol, TransportData, TransportPacket};
+use crate::signal::client::SignalClient;
+
+use super::{peer, Peer};
+
+#[derive(Debug)]
+struct SearchCache {
+    found_peer_id: String,
+    public_addr: String,
+    expires_at: Instant,
+}
+
+#[derive(Debug)]
+pub struct PeerSearchManager {
+    peers: Arc<RwLock<Vec<Arc<Peer>>>>,
+    public_key: String,
+    my_public_addr: String,
+    connected_servers: Arc<RwLock<Vec<Arc<SignalClient>>>>,
+    active_searches: Arc<RwLock<HashMap<String, mpsc::Sender<PeerSearchResponse>>>>,
+    search_cache: Arc<RwLock<HashMap<String, SearchCache>>>,
+}
+
+impl PeerSearchManager {
+    pub fn new(public_key: String, my_public_addr: String, peers: Arc<RwLock<Vec<Arc<Peer>>>>, connected_servers: Arc<RwLock<Vec<Arc<SignalClient>>>>) -> Arc<Self> {
+        Arc::new(Self {
+            peers,
+            public_key,
+            my_public_addr,
+            connected_servers,
+            active_searches: Arc::new(RwLock::new(HashMap::new())),
+            search_cache: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    pub async fn handle_search_request(&self, request: PeerSearchRequest) -> Result<(), String> {
+        let peer_id = request.peer_id.clone(); // id пира инициатора поиска
+        let search_id = request.search_id.clone(); // id поиска
+        
+        println!("[PeerSearch] Starting search for peer {} (request from {})", search_id, peer_id);
+        
+        // Проверяем кэш
+        if let Some(cache) = self.search_cache.read().await.get(&search_id) {
+            if cache.expires_at > Instant::now() {
+                println!("[PeerSearch] Found peer {} in cache", search_id);
+                let response = PeerSearchResponse {
+                    search_id: search_id.clone(), // id поиска
+                    peer_id: peer_id.clone(), // id пира инициатора поиска
+                    found_peer_id: cache.found_peer_id.clone(), // id пира найденного
+                    public_addr: self.my_public_addr.clone(), // публичный адрес ноды пира
+                    hops: 0, // количество прыжков
+                };
+
+                // Находим пира-инициатора поиска среди локальных пиров
+                let peers = self.peers.read().await;
+                for peer in peers.iter() {
+                    let peer_uuid = peer.info.uuid.read().await;
+                    if peer_uuid.as_ref() == Some(&peer_id) {
+                        println!("[PeerSearch] Found initiator peer {} locally, sending response directly", peer_id);
+                        let packet = TransportPacket {
+                            act: "search_response".to_string(), // ответ на поиск
+                            to: Some(peer_id.clone()), // кому отправляем
+                            data: Some(TransportData::PeerSearchResponse(response)), // данные
+                            status: None, // статус
+                            protocol: Protocol::SIGNAL, // протокол
+                            uuid: self.public_key.clone(), // публичный адрес ноды пира
+                        };
+                        peer.send_data(&serde_json::to_string(&packet).unwrap()).await;
+                        println!("[PeerSearch] Sent cached search response to peer");
+                        return Ok(());
+                    }
+                }
+                println!("[PeerSearch] Initiator peer {} not found locally, forwarding response", peer_id);
+            }
+        }
+
+        let peers = self.peers.read().await;
+        println!("[PeerSearch] Checking {} local peers", peers.len());
+        for peer in peers.iter() {
+            let peer_uuid = peer.info.uuid.read().await;
+            if peer_uuid.as_ref() == Some(&search_id) {
+                println!("[PeerSearch] Found peer {} locally", search_id);
+                let response = PeerSearchResponse {
+                    search_id: search_id.clone(), // id поиска
+                    peer_id: peer_id.clone(), // id пира инициатора поиска
+                    found_peer_id: search_id.clone(), // id пира найденного
+                    public_addr: self.my_public_addr.clone(), // публичный адрес ноды пира
+                    hops: 0, // количество прыжков
+                };
+
+                // Кэшируем результат
+                let search_id_clone = search_id.clone();
+                let found_peer_id = search_id_clone.clone();
+                self.search_cache.write().await.insert(
+                    search_id_clone.clone(),
+                    SearchCache {
+                        found_peer_id,
+                        public_addr: self.my_public_addr.clone(),
+                        expires_at: Instant::now() + Duration::from_secs(300), // 5 минут
+                    },
+                );
+
+                // Находим пира-инициатора поиска среди локальных пиров
+                for initiator_peer in peers.iter() {
+                    let initiator_uuid = initiator_peer.info.uuid.read().await;
+                    if initiator_uuid.as_ref() == Some(&peer_id) {
+                        println!("[PeerSearch] Found initiator peer {} locally, sending response directly", peer_id);
+                        let packet = TransportPacket {
+                            act: "search_response".to_string(),
+                            to: Some(peer_id.clone()),
+                            data: Some(TransportData::PeerSearchResponse(response)),
+                            status: None,
+                            protocol: Protocol::SIGNAL,
+                            uuid: self.public_key.clone(),
+                        };
+                        initiator_peer.send_data(&serde_json::to_string(&packet).unwrap()).await;
+                        println!("[PeerSearch] Sent search response to peer");
+                        return Ok(());
+                    }
+                }
+                println!("[PeerSearch] Initiator peer {} not found locally, forwarding response", peer_id);
+            }
+        }
+
+        // Если не нашли локально и есть еще ходы
+        if request.max_hops > 0 {
+            println!("[PeerSearch] Peer not found locally, forwarding search request (hops left: {})", request.max_hops - 1);
+            let new_request = PeerSearchRequest {
+                search_id: search_id.clone(),
+                peer_id: request.peer_id,
+                max_hops: request.max_hops - 1,
+            };
+
+            let packet = TransportPacket {
+                act: "search_peer".to_string(),
+                to: None,
+                data: Some(TransportData::PeerSearchRequest(new_request)),
+                status: None,
+                protocol: Protocol::SIGNAL,
+                uuid: peer_id,
+            };
+
+            let servers = self.connected_servers.read().await;
+            for server in servers.iter() {
+                if let Err(e) = server.send_packet(packet.clone()).await {
+                    println!("[PeerSearch] Failed to forward search request to server: {}", e);
+                } else {
+                    println!("[PeerSearch] Successfully forwarded search request to server");
+                }
+            }
+        } else {
+            println!("[PeerSearch] Search failed - max hops reached");
+        }
+
+        Ok(())
+    }
+
+    pub async fn handle_search_response(&self, response: PeerSearchResponse) -> Result<(), String> {
+        println!("[PeerSearch] Received search response for peer {} (from {})", response.search_id, response.peer_id);
+        
+        // Проверяем, есть ли активный поиск с таким ID
+        if let Some(tx) = self.active_searches.read().await.get(&response.search_id) {
+            println!("[PeerSearch] Found active search, sending response to channel");
+            // Отправляем ответ в канал
+            if let Err(e) = tx.send(response).await {
+                println!("[PeerSearch] Failed to send search response to channel: {}", e);
+            } else {
+                println!("[PeerSearch] Successfully sent response to channel");
+            }
+        } else {
+            println!("[PeerSearch] No active search found, forwarding response to {}", response.peer_id);
+            // Если это не наш поиск, пересылаем ответ дальше
+            let packet = TransportPacket {
+                act: "search_response".to_string(),
+                to: Some(response.peer_id.clone()), // Отправляем инициатору поиска
+                data: Some(TransportData::PeerSearchResponse(response)),
+                status: None,
+                protocol: Protocol::SIGNAL,
+                uuid: self.public_key.clone(),
+            };
+
+            // Отправляем ответ всем серверам
+            let servers = self.connected_servers.read().await;
+            let mut finded_server = false;
+            for server in servers.iter() {
+                if let Err(e) = server.send_packet(packet.clone()).await {
+                    println!("[PeerSearch] Failed to forward search response to server: {}", e);
+                } else {
+                    finded_server = true;
+                }
+            }
+        }
+        Ok(())
+    }
+} 
+
 === ./src\signal\server\server.rs ===
 use serde_json::json;
 use std::sync::Arc;
@@ -1960,23 +2759,30 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, RwLock};
 
+use super::peer_search::PeerSearchManager;
 use super::Peer;
 use crate::config::Config;
-use crate::packets::{Protocol, SyncPeerInfo, SyncPeerInfoData, TransportPacket};
+use crate::db::P2PDatabase;
+use crate::packets::{
+    PeerWaitConnection, Protocol, SyncPeerInfo, SyncPeerInfoData, TransportData, TransportPacket,
+};
+use crate::signal::client::SignalClient;
 use crate::tunnel::Tunnel;
-use crate::GLOBAL_DB;
 
 #[derive(Debug)]
 pub struct SignalServer {
-    pub peers: RwLock<Vec<Arc<Peer>>>,
+    pub peers: Arc<RwLock<Vec<Arc<Peer>>>>,
+    pub connected_servers: Arc<RwLock<Vec<Arc<SignalClient>>>>,
+    peer_search_manager: Arc<PeerSearchManager>,
     port: i64,
     ip: String,
     message_tx: mpsc::Sender<(Arc<Peer>, String)>,
     my_public_addr: Arc<String>,
+    db: Arc<P2PDatabase>,
 }
 
 impl SignalServer {
-    pub async fn new() -> Arc<Self> {
+    pub async fn new(db: &P2PDatabase) -> Arc<Self> {
         let config: Config = Config::from_file("config.toml");
         let (message_tx, mut message_rx) = mpsc::channel(100);
 
@@ -1984,12 +2790,24 @@ impl SignalServer {
         let public_ip = tunnel.get_public_ip();
         let my_public_addr = Arc::new(format!("{}:{}", public_ip, config.signal_server_port));
 
+        let peers = Arc::new(RwLock::new(Vec::new()));
+        let connected_servers = Arc::new(RwLock::new(Vec::new()));
+        let peer_search_manager = PeerSearchManager::new(
+            db.get_or_create_peer_id().unwrap(),
+            my_public_addr.to_string().clone(),
+            peers.clone(),
+            connected_servers.clone(),
+        );
+
         let server = SignalServer {
-            peers: RwLock::new(Vec::new()),
+            peers,
+            connected_servers,
+            peer_search_manager,
             port: config.signal_server_port,
             message_tx,
             ip: public_ip,
-            my_public_addr
+            my_public_addr,
+            db: Arc::new(db.clone()),
         };
 
         let server_arc = Arc::new(server);
@@ -2007,6 +2825,23 @@ impl SignalServer {
     }
 
     pub async fn run(self: Arc<Self>) {
+        let config: Config = Config::from_file("config.toml");
+
+        // Запускаем подключение к другим сигнальным серверам
+        for server_addr in &config.other_signal_servers {
+            let server_addr = server_addr.clone();
+            let self_clone = Arc::clone(&self);
+            tokio::spawn(async move {
+                if let Err(e) = self_clone.connect_to_signal_server(&server_addr).await {
+                    println!(
+                        "[SignalServer] Failed to connect to signal server {}: {}",
+                        server_addr, e
+                    );
+                }
+            });
+        }
+
+        // Запускаем основной сервер
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(addr.clone()).await.unwrap();
         println!("[SignalServer] Running on {}", addr);
@@ -2026,6 +2861,77 @@ impl SignalServer {
             tokio::spawn(async move {
                 self_clone.handle_connection(peer.clone()).await;
             });
+        }
+    }
+
+    async fn connect_to_signal_server(&self, server_addr: &str) -> Result<(), String> {
+        let parts: Vec<&str> = server_addr.split(':').collect();
+        if parts.len() != 2 {
+            return Err(format!("Invalid server address format: {}", server_addr));
+        }
+
+        let ip = parts[0];
+        let port: i64 = parts[1].parse::<i64>().map_err(|e| e.to_string())?;
+
+        let mut client = SignalClient::new(&self.db);
+        client.connect(ip, port, &self.ip, self.port as u16).await?;
+
+        let client_arc = Arc::new(client);
+        self.connected_servers
+            .write()
+            .await
+            .push(client_arc.clone());
+
+        // Запускаем обработчик сообщений от сигнального сервера
+        let self_clone = Arc::clone(&self);
+        if let Some(mut message_rx) = client_arc.get_message_receiver() {
+            tokio::spawn(async move {
+                while let Some(packet) = message_rx.recv().await {
+                    println!("[SignalServer] Received packet from signal server: {:?}", packet);
+                    self_clone.handle_signal_server_packet(packet).await;
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn handle_signal_server_packet(&self, packet: TransportPacket) {
+        match packet.protocol {
+            Protocol::SIGNAL => {
+                if let Some(data) = &packet.data {
+                    match data {
+                        TransportData::PeerSearchRequest(request) => {
+                            println!(
+                                "[SignalServer] Received search request from signal server for peer {}",
+                                request.search_id
+                            );
+                            if let Err(e) = self
+                                .peer_search_manager
+                                .handle_search_request(request.clone())
+                                .await
+                            {
+                                println!("[SignalServer] Failed to handle search request: {}", e);
+                            }
+                        }
+                        TransportData::PeerSearchResponse(response) => {
+                            println!(
+                                "[SignalServer] Received search response from signal server for peer {}",
+                                response.search_id
+                            );
+                            if let Err(e) = self
+                                .peer_search_manager
+                                .handle_search_response(response.clone())
+                                .await
+                            {
+                                println!("[SignalServer] Failed to handle search response: {}", e);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2072,7 +2978,6 @@ impl SignalServer {
             let peers_guard = self.peers.read().await;
             let mut peers_info = Vec::new();
             for p in peers_guard.iter() {
-                let public_addr = p.info.public_addr.read().await.clone();
                 let uuid = p
                     .info
                     .uuid
@@ -2080,36 +2985,42 @@ impl SignalServer {
                     .await
                     .clone()
                     .unwrap_or_else(|| "Not set".to_string());
-                peers_info.push(SyncPeerInfo {
-                    public_addr: public_addr,
-                    uuid: uuid,
-                });
+                peers_info.push(SyncPeerInfo { uuid: uuid });
             }
             peers_info
         };
 
-        let peer_public_addr = peer.info.public_addr.read().await.clone();
+        let peer_uuid = peer
+            .info
+            .uuid
+            .read()
+            .await
+            .clone()
+            .unwrap_or_else(|| "Not set".to_string());
+        let peer_uuid_clone = peer_uuid.clone();
 
         let packet = TransportPacket {
-            public_addr: self.my_public_addr.clone().to_string(),
             act: "peer_list".to_string(),
-            to: Some(peer_public_addr.clone()),
-            data: Some(json!(SyncPeerInfoData { peers: peers_info })),
+            to: Some(peer_uuid.clone().to_string()),
+            data: Some(TransportData::SyncPeerInfoData(SyncPeerInfoData {
+                peers: peers_info,
+            })),
             status: None,
             protocol: Protocol::SIGNAL,
-            uuid: GLOBAL_DB.get_or_create_peer_id().unwrap(),
+            uuid: self.db.get_or_create_peer_id().unwrap(),
         };
 
         let packet = serde_json::to_string(&packet).unwrap();
         if let Err(e) = peer.send(packet).await {
             println!(
                 "[SignalServer] Failed to send peer list to peer {}: {}",
-                peer_public_addr, e
+                peer_uuid_clone.clone().as_str(),
+                e
             );
         } else {
             println!(
                 "[SignalServer] Successfully sent peer list to peer {}",
-                peer_public_addr
+                peer_uuid
             );
         }
     }
@@ -2129,24 +3040,95 @@ impl SignalServer {
                 return;
             }
         };
-        let peer_public_addr = &message.public_addr;
 
+        let peer_uuid = &message.uuid;
         let is_peer_wait_connection = message.act == "wait_connection";
+        let is_peer_accept_connection = message.act == "accept_connection";
 
-        peer.set_wait_connection(is_peer_wait_connection).await;
-        peer.set_public_addr(peer_public_addr.clone()).await;
+        peer.set_wait_connection(is_peer_wait_connection || is_peer_accept_connection)
+            .await;
+        peer.set_uuid(peer_uuid.clone()).await;
 
         if let Some(data) = &message.data {
-            if let Some(peer_id) = data.get("peer_id").and_then(|v| v.as_str()) {
-                println!("[SignalServer] Setting peer UUID: {}", peer_id);
-                peer.set_uuid(peer_id.to_string()).await;
+            match data {
+                TransportData::PeerSearchRequest(request) => {
+                    println!(
+                        "[SignalServer] Received search request for peer {} from {}",
+                        request.search_id, request.peer_id
+                    );
+                    if let Err(e) = self
+                        .peer_search_manager
+                        .handle_search_request(request.clone())
+                        .await
+                    {
+                        println!("[SignalServer] Failed to handle search request: {}", e);
+                    }    
+                }
+                TransportData::PeerSearchResponse(response) => {
+                    println!(
+                        "[SignalServer] Received search response for peer {} from {}",
+                        response.search_id, response.peer_id
+                    );
+                    if let Err(e) = self
+                        .peer_search_manager
+                        .handle_search_response(response.clone())
+                        .await
+                    {
+                        println!("[SignalServer] Failed to handle search response: {}", e);
+                    }
+                }
+                TransportData::PeerInfo(info) => {
+                    println!("[SignalServer] Setting peer UUID: {}", info.peer_id);
+                    peer.set_uuid(info.peer_id.clone()).await;
+                }
+                TransportData::PeerWaitConnection(data) => {
+                    peer.add_open_tunnel(
+                        &data.connect_peer_id,
+                        data.public_ip.clone(),
+                        data.public_port,
+                    )
+                    .await;
+                }
+                TransportData::StorageReservationRequest(request) => {
+                    // Отправляем запрос всем пирам
+                    let peers = self.peers.read().await;
+                    for p in peers.iter() {
+                        if p.get_key().await.as_ref() != Some(&request.peer_id) {
+                            let packet = TransportPacket {
+                                act: "reserve_storage".to_string(),
+                                to: Some(p.get_key().await.unwrap_or_default()),
+                                data: Some(TransportData::StorageReservationRequest(
+                                    request.clone(),
+                                )),
+                                status: None,
+                                protocol: Protocol::SIGNAL,
+                                uuid: self.db.get_or_create_peer_id().unwrap(),
+                            };
+                            if let Err(e) = p.send(serde_json::to_string(&packet).unwrap()).await {
+                                println!("[SignalServer] Failed to forward storage reservation request: {}", e);
+                            }
+                        }
+                    }
+                }
+                TransportData::StorageReservationResponse(response) => {
+                    let packet = TransportPacket {
+                        act: "reserve_storage_response".to_string(),
+                        to: Some(response.peer_id.clone()),
+                        data: Some(TransportData::StorageReservationResponse(response.clone())),
+                        status: None,
+                        protocol: Protocol::SIGNAL,
+                        uuid: self.db.get_or_create_peer_id().unwrap(),
+                    };
+                    self.send_to_peer_by_packet(packet).await;
+                }
+                _ => {}
             }
         }
 
         if message.act == "info" {
             println!("[SignalServer] =================");
             println!("[SignalServer] CONNECTED PEER INFO:");
-            println!("[SignalServer] PUBLIC ADDRESS: {}", peer_public_addr);
+            println!("[SignalServer] PUBLIC ADDRESS: {}", peer_uuid);
             println!("[SignalServer] LOCAL ADDRESS: {}", peer.info.local_addr);
             if let Some(uuid) = peer.info.uuid.read().await.clone() {
                 println!("[SignalServer] PEER UUID: {}", uuid);
@@ -2161,43 +3143,77 @@ impl SignalServer {
         match message.protocol {
             Protocol::STUN => {
                 if is_peer_wait_connection {
-                    println!(
-                        "[SignalServer] Peer is ready to connect: {}",
-                        peer_public_addr
-                    );
-                    if let Some(data) = message.data {
-                        if let Some(target_peer_id) =
-                            data.get("connect_peer_id").and_then(|v| v.as_str())
-                        {
-                            println!(
-                                "[SignalServer] Looking for peer with UUID: {}",
-                                target_peer_id
-                            );
-                            let peers_guard = server.peers.read().await;
-                            for target_peer in peers_guard.iter() {
-                                if let Some(uuid) = target_peer.info.uuid.read().await.clone() {
-                                    if uuid == target_peer_id {
+                    println!("[SignalServer] Peer is ready to connect: {}", peer_uuid);
+                    if let Some(TransportData::PeerWaitConnection(data)) = message.data {
+                        println!(
+                            "[SignalServer] Looking for peer with UUID: {}",
+                            data.connect_peer_id
+                        );
+                        let peers_guard = server.peers.read().await;
+                        for target_peer in peers_guard.iter() {
+                            if let Some(uuid) = target_peer.info.uuid.read().await.clone() {
+                                let open_tunnel =
+                                    target_peer.get_open_tunnel(&data.connect_peer_id).await;
+                                if uuid == data.connect_peer_id {
+                                    println!(
+                                        "[SignalServer] Found peer with matching UUID: {}",
+                                        data.connect_peer_id
+                                    );
+                                    println!("peer finded");
+                                    if open_tunnel.is_some() {
                                         println!(
-                                            "[SignalServer] Found peer with matching UUID: {}",
-                                            target_peer_id
+                                            "[SignalServer] Peer have open tunnel. Start connect peers"
                                         );
                                         let server_clone = Arc::clone(server);
                                         server_clone
                                             .connect_peers(peer.clone(), target_peer.clone())
                                             .await;
-                                        return;
+                                    } else {
+                                        println!(
+                                            "[SignalServer] Peer without open tunnel, send wait connection"
+                                        );
+                                        let packet = TransportPacket {
+                                            act: message.act.to_string(),
+                                            to: message.to.clone(),
+                                            data: Some(TransportData::PeerWaitConnection(
+                                                data.clone(),
+                                            )),
+                                            status: message.status.clone(),
+                                            protocol: Protocol::STUN,
+                                            uuid: message.uuid.to_string(),
+                                        };
+                                        let packet_json = serde_json::to_string(&packet).unwrap();
+                                        target_peer.send(packet_json).await;
+                                        println!("sended packet json")
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                        println!(
+                            "[SignalServer] Peer with UUID {} not found",
+                            data.connect_peer_id
+                        );
+                    }
+                } else if is_peer_accept_connection {
+                    if let Some(TransportData::PeerWaitConnection(data)) = message.data.clone() {
+                        let peers_guard = server.peers.read().await;
+                        for target_peer in peers_guard.iter() {
+                            if let Some(uuid) = target_peer.info.uuid.read().await.clone() {
+                                if uuid == data.connect_peer_id {
+                                    let open_tunnel_a = peer.get_open_tunnel(&uuid).await;
+                                    let open_tunnel_b =
+                                        target_peer.get_open_tunnel(&peer_uuid).await;
+                                    if open_tunnel_a.is_some() && open_tunnel_b.is_some() {
+                                        println!("[SignalServer] Both peers have open tunnels. Connecting");
+                                        server
+                                            .connect_peers(peer.clone(), target_peer.clone())
+                                            .await;
                                     }
                                 }
                             }
-                            println!("[SignalServer] Peer with UUID {} not found", target_peer_id);
                         }
                     }
-
-                    // if server.peers.read().await.len() >= 1 {
-                    //     let server_clone = Arc::clone(server);
-                    //     server_clone.wait_for_peers().await;
-                    //     println!("[SignalServer] End wait peers");
-                    // }
                 }
             }
             Protocol::TURN => {
@@ -2205,16 +3221,13 @@ impl SignalServer {
                     println!("[SignalServer] Received turn packet: {:?}", message);
                     let peers_guard = server.peers.read().await;
                     for item in peers_guard.iter() {
-                        if Some(item.info.public_addr.read().await.to_string()) == Some(to.clone())
-                            || *item.info.uuid.read().await == Some(to.clone())
-                        {
+                        if *item.info.uuid.read().await == Some(to.clone()) {
                             println!(
                                 "[SignalServer] Send turn packet: {} {:?}",
                                 peer.info.local_addr, message
                             );
 
                             let turn_packet = TransportPacket {
-                                public_addr: message.public_addr.to_string(),
                                 act: message.act.to_string(),
                                 to: message.to.clone(),
                                 data: message.data.clone(),
@@ -2243,29 +3256,30 @@ impl SignalServer {
                 if message.act == "peer_list" {
                     server.clone().sync_peers(peer.clone()).await;
                 } else if message.protocol == Protocol::STUN && message.act == "wait_connection" {
-                    // Добавляем обработку массива peers
-                    if let Some(data) = &message.data {
-                        if let Some(peers) = data.get("peers").and_then(|v| v.as_array()) {
-                            println!("[SignalServer] Processing peers for wait_connection:");
-                            for peer in peers {
-                                if let Some(public_addr) =
-                                    peer.get("public_addr").and_then(|v| v.as_str())
-                                {
-                                    println!("  - Public Address: {}", public_addr);
-                                }
-                                if let Some(uuid) = peer.get("uuid").and_then(|v| v.as_str()) {
-                                    println!("    UUID: {}", uuid);
-                                }
-                            }
-                        } else {
-                            println!(
-                                "[SignalServer] No peers found in the data for wait_connection."
-                            );
+                    if let Some(TransportData::SyncPeerInfoData(data)) = &message.data {
+                        println!("[SignalServer] Processing peers for wait_connection:");
+                        for peer in &data.peers {
+                            // println!("  - Public Address: {}", peer.public_addr);
+                            println!("    UUID: {}", peer.uuid);
                         }
                     } else {
-                        println!("[SignalServer] No data found in the packet for wait_connection.");
+                        println!("[SignalServer] No peers found in the data for wait_connection.");
                     }
+                } else if message.to.is_some() {
+                    println!(
+                        "[SignalServer] Sending packet to peer: {}",
+                        message.to.clone().unwrap()
+                    );
+                    self.send_to_peer_by_packet(message.clone()).await;
                 }
+            }
+        }
+    }
+
+    async fn send_to_peer_by_packet(&self, message: TransportPacket) {
+        for peer in self.peers.read().await.iter() {
+            if peer.info.uuid.read().await.clone().unwrap() == message.to.clone().unwrap() {
+                peer.send(serde_json::to_string(&message).unwrap()).await;
             }
         }
     }
@@ -2273,15 +3287,12 @@ impl SignalServer {
     async fn connect_peers(&self, first_peer: Arc<Peer>, second_peer: Arc<Peer>) {
         println!("[SignalServer] Connecting peers");
 
-        let first_peer_public_addr = first_peer.info.public_addr.read().await.clone();
-        let second_peer_public_addr = second_peer.info.public_addr.read().await.clone();
-
         {
             println!(
                 "[SignalServer] Sending packet to: {}",
                 second_peer.info.local_addr
             );
-            SignalServer::send_peer_info(second_peer.clone(), first_peer.clone(), first_peer_public_addr).await;
+            SignalServer::send_peer_info(second_peer.clone(), first_peer.clone()).await;
             println!(
                 "[SignalServer] Sent packet to peer: {}",
                 second_peer.info.local_addr
@@ -2294,7 +3305,7 @@ impl SignalServer {
                 "[SignalServer] Sending packet to: {}",
                 first_peer.info.local_addr
             );
-            SignalServer::send_peer_info(first_peer.clone(), second_peer.clone(), second_peer_public_addr).await;
+            SignalServer::send_peer_info(first_peer.clone(), second_peer.clone()).await;
             println!(
                 "[SignalServer] Sent packet to peer: {}",
                 first_peer.info.local_addr
@@ -2333,86 +3344,56 @@ impl SignalServer {
         return Ok(peer_res.clone().unwrap());
     }
 
-    async fn send_peer_info(to_peer: Arc<Peer>, about_peer: Arc<Peer>, public_addr: String) {
-        let wait_packet = TransportPacket {
-            public_addr: public_addr.clone(), //к кому будет пытаться подключиться пир
-            act: "wait_connection".to_string(), //TODO:было wait_connection
-            to: None,                         //кому отправляем данный пакет
-            data: None,
-            status: None,
-            protocol: Protocol::STUN,
-            uuid: about_peer.info.uuid.read().await.clone().unwrap(),
-        };
-        let wait_packet = serde_json::to_string(&wait_packet).unwrap();
+    async fn send_peer_info(to_peer: Arc<Peer>, about_peer: Arc<Peer>) {
+        let pub_id = about_peer.info.uuid.read().await.clone().unwrap();
+        if let Some(key_peer) = to_peer.get_key().await {
+            let data_open_tunnel = about_peer.get_open_tunnel(&key_peer.to_string()).await;
+            if let Some(open_tunnel) = data_open_tunnel {
+                let wait_packet = TransportPacket {
+                    act: "accept_connection".to_string(), // TODO: было wait_connection
+                    to: Some(pub_id.clone()),             // UUID кому отправляем данный пакет
+                    data: Some(TransportData::PeerWaitConnection(PeerWaitConnection {
+                        connect_peer_id: pub_id.clone(),
+                        public_ip: open_tunnel.ip,
+                        public_port: open_tunnel.port,
+                    })),
+                    status: None,
+                    protocol: Protocol::STUN,
+                    uuid: about_peer.info.uuid.read().await.clone().unwrap(),
+                };
+                let wait_packet = serde_json::to_string(&wait_packet).unwrap();
 
-        println!(
-            "[SignalServer] Sending wait packet to peer: {}",
-            to_peer.info.local_addr
-        );
-        let result = to_peer.send(wait_packet).await;
+                println!(
+                    "[SignalServer] Sending wait packet to peer: {}",
+                    to_peer.info.local_addr
+                );
+                let result = to_peer.send(wait_packet).await;
 
-        match result {
-            Ok(_) => println!(
-                "[SignalServer] Successfully sent packet to peer: {}. Peer connect to: {}",
-                to_peer.info.public_addr.read().await,
-                public_addr
-            ),
-            Err(e) => println!("[SignalServer] Failed to send peer to peer info: {}", e),
+                match result {
+                    Ok(_) => println!(
+                        "[SignalServer] Successfully sent packet to peer: {}. Peer connecting to: {}",
+                        key_peer,
+                        pub_id,
+                    ),
+                    Err(e) => println!("[SignalServer] Failed to send peer to peer info: {}", e),
+                }
+            }
         }
     }
 
-    // async fn wait_for_peers(self: Arc<Self>) {
-    //     println!("START WAITNG PEERS ");
-    //     // loop {
-    //     let peers_snapshot = {
-    //         let peers_guard = self.peers.read().await;
-    //         peers_guard.clone()
-    //     };
-
-    //     let mut waiting_peers: Vec<Arc<Peer>> = Vec::new();
-    //     for peer in peers_snapshot.iter() {
-    //         if *peer.info.wait_connection.read().await {
-    //             waiting_peers.push(peer.clone());
-    //         }
-    //     }
-
-    //     if waiting_peers.len() % 2 == 0 && waiting_peers.len() > 0 {
-    //         println!("Found 2 peers, starting connection");
-    //         let first_peer = &waiting_peers[0];
-    //         let second_peer = &waiting_peers[1];
-
-    //         let first_peer_public_addr = first_peer.info.public_addr.read().await.clone();
-    //         let second_peer_public_addr = second_peer.info.public_addr.read().await.clone();
-
-    //         {
-    //             println!(
-    //                 "[SignalServer] Sending packet to: {}",
-    //                 second_peer.info.local_addr
-    //             );
-    //             SignalServer::send_peer_info(second_peer.clone(), first_peer_public_addr).await;
-    //             println!(
-    //                 "[SignalServer] Sended packet to peer: {}",
-    //                 second_peer.info.local_addr
-    //             );
-    //         }
-    //         second_peer.set_wait_connection(false).await;
-    //         tokio::time::sleep(Duration::from_millis(500)).await;
-    //         {
-    //             println!(
-    //                 "[SignalServer] Sending packet to: {}",
-    //                 first_peer.info.local_addr
-    //             );
-    //             SignalServer::send_peer_info(first_peer.clone(), second_peer_public_addr).await;
-    //             println!(
-    //                 "[SignalServer] Sended packet to peer: {}",
-    //                 first_peer.info.local_addr
-    //             );
-    //         }
-    //         first_peer.set_wait_connection(false).await;
-    //     }
-    // }
+    async fn broadcast_to_servers(&self, packet: TransportPacket) {
+        let servers = self.connected_servers.read().await;
+        for server in servers.iter() {
+            if let Err(e) = server.send_packet(packet.clone()).await {
+                println!("[SignalServer] Failed to broadcast to server: {}", e);
+            }
+        }
+    }
 }
 
+
+=== ./src\test_db\mod.rs ===
+ 
 
 === ./src\tunnel\mod.rs ===
 mod tunnel;
@@ -2425,14 +3406,12 @@ use async_std::sync::RwLock;
 use async_std::{fs, task};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Number;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{str, thread};
 use stun_client::*;
-use tokio::sync::mpsc;
 use tokio::time::timeout;
-
-use crate::packets::TransportPacket;
 
 #[derive(Serialize, Deserialize)]
 struct Message {
@@ -2469,6 +3448,22 @@ impl Tunnel {
             is_connected,
         }
     }
+    
+    pub async fn with_port(port: u16) -> Self {
+        let (public_ip, public_port) = Self::stun(port).await;
+        Tunnel {
+            local_port: port,
+            public_ip,
+            public_port,
+            socket: None,
+            client: None,
+            is_connected: Arc::new(RwLock::new(false)),
+        }
+    }
+
+    pub fn get_public_addr(&self) -> String {
+        return format!("{}:{}", self.public_ip, self.public_port);
+    }
 
     async fn stun(port: u16) -> (String, u16) {
         let client = Client::new(format!("0.0.0.0:{}", port), None).await;
@@ -2477,8 +3472,38 @@ impl Tunnel {
         }
         let mut client = client.unwrap();
 
-        // stun.l.google.com:19302
-        let res = client.binding_request("stun.nextcloud.com:443", None).await;
+        let stun_servers = vec![
+            "stun.l.google.com:19302",
+            "stun1.l.google.com:19302",
+            "stun2.l.google.com:19302",
+            "stun3.l.google.com:19302",
+            "stun4.l.google.com:19302",
+            "stun.stunprotocol.org:3478",
+            "stun.voipstunt.com:3478"
+        ];
+
+        let mut last_error = None;
+        for server in stun_servers {
+            println!("[DEBUG] Trying STUN server: {}", server);
+            let res = client.binding_request(server, None).await;
+            match res {
+                Ok(_) => {
+                    println!("[DEBUG] Successfully connected to STUN server: {}", server);
+                    break;
+                }
+                Err(e) => {
+                    println!("[DEBUG] Failed to connect to {}: {:?}", server, e);
+                    last_error = Some(e);
+                    continue;
+                }
+            }
+        }
+
+        if let Some(e) = last_error {
+            panic!("Failed to connect to any STUN server. Last error: {:?}", e);
+        }
+
+        let res = client.binding_request("stun.l.google.com:19302", None).await;
         if let Err(e) = res {
             panic!("Failed to send binding request: {:?}", e);
         }
@@ -2710,25 +3735,19 @@ impl Tunnel {
 
 
 === ./src\ui\console.rs ===
-use serde_json::json;
 use std::collections::HashMap;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
-use base64;
-use crate::connection::Connection;
 use crate::manager::ConnectionTurnStatus;
-use crate::packets::PeerUploadFile;
 use std::io::{self, Write};
 use std::sync::Arc;
 use colored::*;
 use crate::peer::peer_api::PeerAPI;
-use crate::{packets::{Protocol, TransportPacket}, GLOBAL_DB};
+use crate::db::P2PDatabase;
 
-pub fn print_all_files() {
-    let myfiles = GLOBAL_DB.get_myfile_fragments();
+pub fn print_all_files(db: &P2PDatabase) {
+    let myfiles = db.get_myfile_fragments();
     
-    let uuid_peer = GLOBAL_DB.get_or_create_peer_id().unwrap();
+    let uuid_peer = db.get_or_create_peer_id().unwrap();
     println!("{}", format!("[Peer] UUID: {}", uuid_peer).yellow());
 
     match myfiles {
@@ -2746,8 +3765,8 @@ pub fn print_all_files() {
     }
 }
 
-pub fn print_all_fragments() {
-    let fragments = GLOBAL_DB.get_storage_fragments();
+pub fn print_all_fragments(db: &P2PDatabase) {
+    let fragments = db.get_storage_fragments();
 
     match fragments {
         Ok(fragments) => {
@@ -2770,17 +3789,20 @@ pub fn print_all_commands() {
     println!("{}", "  files - List all your files");
     println!("{}", "  fragments - List all your fragments");
     println!("{}", "  peers - List all peers");
+    println!("{}", "  search_peer <peer_id> - Search for a specific peer");
     println!("{}", "  connect <peer_id> - Connect to a peer");
     println!("{}", "  send_all <message> - Send a message to all peers");
     println!("{}", "  <message> - Send a message to the peer");
     println!("{}", "  get <session_key> - Get a file from the peer");
     println!("{}", "  upload <file_path> - Upload a file to the peer");
+    println!("{}", "  reserve <size_in_bytes> - Reserve storage space on peers");
     println!("{}", "  help - Show available commands");
 }
 
 pub async fn console_manager(
     api: Arc<PeerAPI>,
     connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
+    db: &P2PDatabase,
 ) {
     let mut input = String::new();
     print!("\x1b[32m[P2P] >\x1b[0m ");
@@ -2791,12 +3813,36 @@ pub async fn console_manager(
     if trimmed_input == "help" {
         print_all_commands();
     } else if trimmed_input == "files" {
-        print_all_files();
+        print_all_files(db);
     } else if trimmed_input == "fragments" {
-        print_all_fragments();
+        print_all_fragments(db);
     } else if trimmed_input == "peers" {
         if let Err(e) = api.request_peer_list().await {
             println!("{}", format!("[Peer] Failed to request peer list: {}", e).red());
+        }
+    } else if trimmed_input.starts_with("search_peer ") {
+        let peer_id = trimmed_input.strip_prefix("search_peer ").unwrap();
+        if let Err(e) = api.search_peer(peer_id.to_string()).await {
+            println!("{}", format!("[Peer] Failed to search peer: {}", e).red());
+        }
+    } else if trimmed_input.starts_with("reserve ") {
+        let size_str = trimmed_input.strip_prefix("reserve ").unwrap();
+        match size_str.parse::<u64>() {
+            Ok(size) => {
+                if let Err(e) = api.reserve_storage(size).await {
+                    println!("{}", format!("[Peer] Failed to reserve storage: {}", e).red());
+                } else {
+                    println!("{}", format!("[Peer] Storage reservation request sent for {} bytes", size).green());
+                }
+            },
+            Err(_) => println!("{}", "[Peer] Invalid size format. Please provide a number in bytes.".red()),
+        }
+    } else if trimmed_input.starts_with("valid_token ") {
+        let token = trimmed_input.strip_prefix("valid_token ").unwrap();
+        if let Err(e) = api.valid_token(token.to_string()).await {
+            println!("{}", format!("[Peer] Failed to validate token: {}", e).red());
+        } else {
+            println!("{}", format!("[Peer] Token validated successfully").green());
         }
     } else if trimmed_input.starts_with("connect ") {
         let peer_id = trimmed_input.strip_prefix("connect ").unwrap();
@@ -2822,14 +3868,10 @@ pub async fn console_manager(
                     let file_path = trimmed_input.strip_prefix("upload ").unwrap();
                     if let Err(e) = api.upload_file(key.clone(), file_path.to_string()).await {
                         println!("{}", format!("[Peer] Failed to upload file: {}", e).red());
-                    } else {
-                        println!("{}", "[Peer] File uploaded successfully".green());
                     }
                 } else {
                     if let Err(e) = api.send_message(key.clone(), trimmed_input.to_string()).await {
                         println!("{}", format!("[Peer] Failed to send message: {}", e).red());
-                    } else {
-                        println!("{}", "[Peer] Message sent successfully".green());
                     }
                 }
             }

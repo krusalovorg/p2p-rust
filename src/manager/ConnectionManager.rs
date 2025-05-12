@@ -1,25 +1,28 @@
 use crate::connection::{Connection, Message};
+use crate::db::P2PDatabase;
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::TransportPacket;
+use crate::peer::peer_api::PeerAPI;
 use crate::tunnel::Tunnel;
 use crate::ui::console_manager;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
-use crate::peer::peer_api::PeerAPI;
-use crate::db::P2PDatabase;
 
+use super::types::PeerOpenNetInfo;
+
+#[derive(Clone)]
 pub struct ConnectionManager {
     pub connections: Arc<Mutex<HashMap<String, Connection>>>,
     pub tunnels: Arc<Mutex<HashMap<String, Arc<Mutex<Tunnel>>>>>,
+    pub connections_stun: Arc<Mutex<HashMap<String, PeerOpenNetInfo>>>,
+
     pub incoming_packet_rx:
         Arc<Mutex<mpsc::Receiver<(ConnectionType, TransportPacket, Option<Arc<Connection>>)>>>,
     pub incoming_packet_tx:
         mpsc::Sender<(ConnectionType, TransportPacket, Option<Arc<Connection>>)>,
 
     pub connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
-    pub base_tunnel: Arc<Mutex<Tunnel>>,
-    pub my_public_addr: Arc<String>,
     pub db: Arc<P2PDatabase>,
 }
 
@@ -30,23 +33,22 @@ impl ConnectionManager {
         let connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
-        let tunnel = Arc::new(tokio::sync::Mutex::new(Tunnel::new().await));
-
-        let my_ip = tunnel.lock().await.get_public_ip();
-        let my_port = tunnel.lock().await.get_public_port();
-        let my_public_addr = Arc::new(format!("{}:{}", my_ip, my_port));
+        let connections_stun = Arc::new(Mutex::new(HashMap::<String, PeerOpenNetInfo>::new()));
 
         ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
+            connections_stun,
+
             incoming_packet_rx: Arc::new(Mutex::new(incoming_packet_rx)),
             incoming_packet_tx,
+
             connections_turn,
-            base_tunnel: tunnel,
-            my_public_addr,
+
             db: Arc::new(db.clone()),
         }
     }
+
     pub async fn send_signaling_message(
         &self,
         server_address: &str,
@@ -83,11 +85,12 @@ impl ConnectionManager {
 
         let id_clone = id.clone();
         let connections_turn_clone = self.connections_turn.clone();
-        
-        let my_public_addr_clone = self.my_public_addr.clone();
-        let my_public_addr_clone_for_api = my_public_addr_clone.clone();
 
-        let api = PeerAPI::new(connection.clone(), my_public_addr_clone_for_api, &self.db);
+        let api = PeerAPI::new(
+            connection.clone(),
+            &self.db,
+            &self,
+        );
         let api_clone = api.clone();
         let db_clone = self.db.clone();
 
@@ -126,11 +129,15 @@ impl ConnectionManager {
         );
     }
 
+    pub async fn get_tunnel(&self, id: String) -> Option<Arc<Mutex<Tunnel>>> {
+        let tunnels = self.tunnels.lock().await;
+        tunnels.get(&id).cloned()
+    }
+
     pub async fn add_tunnel(&self, id: String, tunnel: Tunnel) {
         let tx = self.incoming_packet_tx.clone();
         let mut tunnels = self.tunnels.lock().await;
 
-        let id_clone = id.clone();
         let tunnel_clone = Arc::new(tokio::sync::Mutex::new(tunnel));
         let tunnel_clone_for_spawn = tunnel_clone.clone();
         tokio::spawn(async move {

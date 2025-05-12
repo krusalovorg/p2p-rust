@@ -5,8 +5,9 @@ pub struct PeerInfo {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerWaitConnection {
-    pub peer_id: String,
     pub connect_peer_id: String,
+    pub public_ip: String,
+    pub public_port: u16
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -31,7 +32,6 @@ pub struct PeerUploadFile {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SyncPeerInfo {
-    pub public_addr: String,
     pub uuid: String,
 }
 
@@ -65,29 +65,82 @@ pub struct FileData {
     pub peer_id: String,
 }
 
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct SaveFile {
+pub struct StunSyncPubAddr {
+    pub public_addr: String
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageValidTokenRequest {
+    pub token: String,
     pub peer_id: String,
-    pub filename: String,
-    pub contents: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageValidTokenResponse {
+    pub peer_id: String,
+    pub status: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageReservationRequest {
+    pub peer_id: String,
+    pub size_in_bytes: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageToken {
+    pub file_size: u64,                  // Размер файла
+    pub storage_provider: String,      // Паблик-ключ (или крипто-адрес) хранителя
+    pub timestamp: u64,                  // Unix-время создания токена
+    pub signature: Vec<u8>,              // Подпись хранителя, подтверждающая согласие
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StorageReservationResponse {
+    pub peer_id: String,
+    pub token: String,  // base64 encoded StorageToken
+    pub size_in_bytes: u64,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+pub struct PeerSearchRequest {
+    pub search_id: String, // id поиска
+    pub peer_id: String, // id пира инициатора поиска
+    pub max_hops: u32, // максимальное количество прыжков
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+pub struct PeerSearchResponse {
+    pub search_id: String, // id поиска
+    pub peer_id: String, // id пира инициатора поиска
+    pub found_peer_id: String, // id пира найденного
+    pub public_addr: String, // публичный адрес ноды пира
+    pub hops: u32, // количество прыжков
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub enum TransportData {
+    Message(Message),
     PeerInfo(PeerInfo),
     PeerWaitConnection(PeerWaitConnection),
-    PeerFileSaved(PeerFileSaved),
     PeerFileGet(PeerFileGet),
     PeerUploadFile(PeerUploadFile),
     SyncPeerInfoData(SyncPeerInfoData),
-    Message(Message),
+    StorageReservationRequest(StorageReservationRequest),
+    StorageReservationResponse(StorageReservationResponse),
+    StorageValidTokenRequest(StorageValidTokenRequest),
+    StorageValidTokenResponse(StorageValidTokenResponse),
+    PeerFileSaved(PeerFileSaved),
+    StunSyncPubAddr(StunSyncPubAddr),
     FileData(FileData),
-    SaveFile(SaveFile),
+    PeerSearchRequest(PeerSearchRequest),
+    PeerSearchResponse(PeerSearchResponse),
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct TransportPacket {
-    pub public_addr: String, //к кому будет пытаться подключиться пир
     pub act: String,         //info, answer, wait_connection,
     pub to: Option<String>,  //кому отправляем данный пакет
     pub data: Option<TransportData>,
@@ -100,8 +153,8 @@ impl std::fmt::Display for TransportPacket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "TransportPacket {{ public_addr: {}, act: {}, to: {:?}, protocol: {:?}, uuid: {} }}",
-            self.public_addr, self.act, self.to, self.protocol, self.uuid
+            "TransportPacket {{ act: {}, to: {:?}, protocol: {:?}, uuid: {} }}",
+            self.act, self.to, self.protocol, format!("{:?}...{:?}", &self.uuid[0..5], &self.uuid[30..])
         )
     }
 }

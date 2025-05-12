@@ -30,8 +30,6 @@ impl Connection {
     pub async fn new(
         signal_server_ip: String,
         signal_server_port: i64,
-        tunnel_public_ip: String,
-        tunnel_public_port: u16,
         db: &P2PDatabase,
     ) -> Connection {
         let (tx, rx) = mpsc::channel(16);
@@ -46,7 +44,6 @@ impl Connection {
 
         // Отправляем пакет при создании соединения
         let connect_packet = TransportPacket {
-            public_addr: format!("{}:{}", tunnel_public_ip, tunnel_public_port),
             act: "info".to_string(),
             to: None,
             data: Some(
@@ -70,8 +67,6 @@ impl Connection {
             rx,
             reader.clone(),
             writer.clone(),
-            tunnel_public_ip,
-            tunnel_public_port,
             Arc::new(db.clone()),
         ));
 
@@ -116,15 +111,13 @@ impl Connection {
         mut rx: mpsc::Receiver<Message>,
         reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
         writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
-        tunnel_public_ip: String,
-        tunnel_public_port: u16,
         db: Arc<P2PDatabase>,
     ) {
         println!("[Connection] Processing messages");
 
         sleep(Duration::from_millis(100)).await;
 
-        match Self::send_peer_info_request(&writer, &tunnel_public_ip, tunnel_public_port, &db).await {
+        match Self::send_peer_info_request(&writer, &db).await {
             Ok(_) => (),
             Err(e) => {
                 println!("[Connection] Failed to send peer info request: {}", e);
@@ -157,12 +150,9 @@ impl Connection {
 
     pub async fn send_peer_info_request(
         writer: &Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
-        public_ip: &str,
-        public_port: u16,
         db: &P2PDatabase,
     ) -> Result<(), String> {
         let connect_packet = TransportPacket {
-            public_addr: format!("{}:{}", public_ip, public_port),
             act: "info".to_string(),
             to: None,
             data: Some(

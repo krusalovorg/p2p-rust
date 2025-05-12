@@ -1,7 +1,9 @@
+use async_std::sync::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, split}; // Добавляем split
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt}; // Добавляем split
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, mpsc}; // Добавляем mpsc
+use tokio::sync::{mpsc, RwLock}; // Добавляем mpsc
 
 #[derive(Clone, Debug)]
 pub struct InfoPeer {
@@ -12,11 +14,19 @@ pub struct InfoPeer {
 }
 
 #[derive(Debug, Clone)]
+pub struct PeerOpenNetInfo {
+    pub ip: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone)]
 pub struct Peer {
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>, // Добавляем reader
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>, // Добавляем writer
-    pub info: InfoPeer,              // Peer information (ip:port)
-    tx: mpsc::Sender<String>,        // Добавляем Sender для отправки сообщений
+    pub info: InfoPeer,                                  // Peer information (ip:port)
+    tx: mpsc::Sender<String>,                            // Добавляем Sender для отправки сообщений
+
+    open_tunnels: Arc<RwLock<HashMap<String, PeerOpenNetInfo>>>,
 }
 
 impl Peer {
@@ -32,6 +42,8 @@ impl Peer {
             });
         }
 
+        let open_tunnels = Arc::new(RwLock::new(HashMap::<String, PeerOpenNetInfo>::new()));
+
         let (reader, writer) = split(socket);
         let reader = Arc::new(RwLock::new(reader));
         let writer = Arc::new(RwLock::new(writer));
@@ -42,54 +54,70 @@ impl Peer {
             writer,
             info: info.unwrap(),
             tx,
+            open_tunnels,
         })
     }
 
     pub async fn send_data(&self, message: &str) {
         let message_len = message.len() as u32;
         let len_bytes = message_len.to_be_bytes();
-        
+
         let mut writer = self.writer.write().await;
-        
+
         // Отправляем длину сообщения (4 байта)
         if let Err(e) = writer.write_all(&len_bytes).await {
-            println!("Failed to send message length to peer {}: {}", self.info.local_addr, e);
+            println!(
+                "Failed to send message length to peer {}: {}",
+                self.info.local_addr, e
+            );
             return;
         }
-        
+
         // Отправляем само сообщение
         if let Err(e) = writer.write_all(message.as_bytes()).await {
-            println!("Failed to send message to peer {}: {}", self.info.local_addr, e);
+            println!(
+                "Failed to send message to peer {}: {}",
+                self.info.local_addr, e
+            );
         } else {
-            println!("[SendData] Message sent to peer {}: {}", self.info.local_addr, message);
+            println!(
+                "[SendData] Message sent to peer {}: {}",
+                self.info.local_addr, message
+            );
         }
     }
 
     pub async fn receive_message(&self) -> Result<String, String> {
         let mut reader = self.reader.write().await;
-        
+
         // Читаем длину сообщения (4 байта)
         let mut len_bytes = [0u8; 4];
         match reader.read_exact(&mut len_bytes).await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::ConnectionReset {
                     println!("Peer {} disconnected", self.info.local_addr);
                     return Err("Peer disconnected".to_string());
                 }
-                println!("Error reading message length from peer {}: {}", self.info.local_addr, e);
+                println!(
+                    "Error reading message length from peer {}: {}",
+                    self.info.local_addr, e
+                );
                 return Err(e.to_string());
             }
         }
-        
+
         let message_len = u32::from_be_bytes(len_bytes) as usize;
-        
+
         // Читаем само сообщение
         let mut message_bytes = vec![0u8; message_len];
         match reader.read_exact(&mut message_bytes).await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => {
-                println!("Error reading message from peer {}: {}", self.info.local_addr, e);
+                println!(
+                    "Error reading message from peer {}: {}",
+                    self.info.local_addr, e
+                );
                 return Err(e.to_string());
             }
         }
@@ -97,10 +125,27 @@ impl Peer {
         match String::from_utf8(message_bytes) {
             Ok(message) => Ok(message),
             Err(e) => {
-                println!("Error converting message to string from peer {}: {}", self.info.local_addr, e);
+                println!(
+                    "Error converting message to string from peer {}: {}",
+                    self.info.local_addr, e
+                );
                 Err(e.to_string())
             }
         }
+    }
+
+    pub async fn add_open_tunnel(&self, peer_id: &str, ip: String, port: u16) {
+        let mut open_tunnels = self.open_tunnels.write().await;
+        open_tunnels.insert(peer_id.to_string(), PeerOpenNetInfo { ip, port });
+    }
+
+    pub async fn get_open_tunnel(&self, peer_id: &str) -> Option<PeerOpenNetInfo> {
+        let open_tunnels = self.open_tunnels.read().await;
+        open_tunnels.get(peer_id).cloned()
+    }
+
+    pub async fn get_key(&self) -> Option<String> {
+        return self.info.uuid.read().await.clone();
     }
 
     pub async fn set_wait_connection(&self, wait_connection_new: bool) {

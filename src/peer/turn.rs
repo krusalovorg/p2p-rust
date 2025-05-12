@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::sync::Arc;
 use colored::*;
 
 use crate::connection::Connection;
@@ -8,7 +7,6 @@ use crate::db::P2PDatabase;
 
 pub async fn turn_tunnel(
     packet: TransportPacket,
-    my_public_addr: Arc<String>,
     signal: &Connection,
     db: &P2PDatabase,
 ) -> Result<String, String> {
@@ -19,7 +17,6 @@ pub async fn turn_tunnel(
     );
     if packet.act == "wait_connection" {
         let packet_hello = TransportPacket {
-            public_addr: my_public_addr.clone().to_string(),
             act: "try_turn_connection".to_string(),
             to: Some(packet.uuid.clone().to_string()),
             data: None,
@@ -42,7 +39,6 @@ pub async fn turn_tunnel(
         }
     } else if packet.act == "accept_connection" || packet.act == "try_turn_connection" {
         let packet_hello = TransportPacket {
-            public_addr: my_public_addr.clone().to_string(),
             act: "accept_connection".to_string(),
             to: Some(packet.uuid.to_string()),
             data: None,

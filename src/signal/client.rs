@@ -2,7 +2,7 @@ use crate::db::P2PDatabase;
 use crate::packets::{PeerInfo, Protocol, TransportData, TransportPacket};
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::io::{split, AsyncWriteExt};
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
 
@@ -15,22 +15,29 @@ struct Peer {
 type PeersSender = mpsc::Sender<Peer>;
 type PeersReceiver = mpsc::Receiver<Peer>;
 
+#[derive(Debug)]
 pub struct SignalClient {
     writer: Option<Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>>,
     reader: Option<Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>>,
     db: Arc<P2PDatabase>,
+    message_tx: mpsc::Sender<TransportPacket>,
+    message_rx: Option<mpsc::Receiver<TransportPacket>>,
 }
 
 impl SignalClient {
     pub fn new(db: &P2PDatabase) -> Self {
-        // let config: Config = Config::from_file("config.toml");
-        // let signal_server_port = config.signal_server_port;
-
+        let (message_tx, message_rx) = mpsc::channel(100);
         SignalClient {
             writer: None,
             reader: None,
             db: Arc::new(db.clone()),
+            message_tx,
+            message_rx: Some(message_rx),
         }
+    }
+
+    pub fn get_message_receiver(&mut self) -> Option<mpsc::Receiver<TransportPacket>> {
+        self.message_rx.take()
     }
 
     pub async fn connect(
@@ -51,8 +58,59 @@ impl SignalClient {
                 self.writer = Some(Arc::new(RwLock::new(writer)));
                 self.reader = Some(Arc::new(RwLock::new(reader)));
 
+                // Запускаем обработчик входящих сообщений
+                let reader = self.reader.as_ref().unwrap().clone();
+                let db = self.db.clone();
+                let message_tx = self.message_tx.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0; 1024];
+                    loop {
+                        let mut reader_guard = reader.write().await;
+                        
+                        // Читаем длину сообщения (4 байта)
+                        let mut len_bytes = [0u8; 4];
+                        match reader_guard.read_exact(&mut len_bytes).await {
+                            Ok(_) => {
+                                let message_len = u32::from_be_bytes(len_bytes) as usize;
+                                
+                                // Читаем само сообщение
+                                let mut message_bytes = vec![0u8; message_len];
+                                match reader_guard.read_exact(&mut message_bytes).await {
+                                    Ok(_) => {
+                                        let message = String::from_utf8_lossy(&message_bytes);
+                                        println!("[SignalClient] Received message: {}", message);
+                                        if let Ok(packet) = serde_json::from_str::<TransportPacket>(&message) {
+                                            println!("[SignalClient] Parsed packet: {:?}", packet);
+                                            
+                                            // Отправляем пакет в канал для обработки
+                                            if let Err(e) = message_tx.send(packet).await {
+                                                println!("[SignalClient] Failed to send packet to handler: {}", e);
+                                                break;
+                                            }
+                                        } else {
+                                            println!("[SignalClient] Failed to parse packet: {}", message);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("[SignalClient] Error reading message: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if e.kind() == std::io::ErrorKind::ConnectionReset {
+                                    println!("[SignalClient] Connection closed by server");
+                                    break;
+                                }
+                                println!("[SignalClient] Error reading message length: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                });
+
+                // Отправляем начальный пакет
                 let connect_packet = TransportPacket {
-                    public_addr: format!("{}:{}", public_ip, public_port),
                     act: "info".to_string(),
                     to: None,
                     data: Some(TransportData::PeerInfo(PeerInfo {
@@ -63,19 +121,7 @@ impl SignalClient {
                     uuid: self.db.get_or_create_peer_id().unwrap(),
                 };
 
-                let connect_packet = serde_json::to_string(&connect_packet).unwrap();
-
-                if let Some(writer) = &self.writer {
-                    writer
-                        .write()
-                        .await
-                        .write_all(connect_packet.as_bytes())
-                        .await
-                        .map_err(|e| {
-                            println!("[SignalClient] Failed to send connect packet: {}", e);
-                            e.to_string()
-                        })?;
-                }
+                self.send_packet(connect_packet).await?;
 
                 Ok(())
             }
@@ -88,49 +134,40 @@ impl SignalClient {
 
     pub async fn send_packet(&self, packet: TransportPacket) -> Result<(), String> {
         let string_packet = serde_json::to_string(&packet).unwrap();
-
-        if self.writer.is_none() {
-            return Err("[SignalClient] Writer is not connected".to_string());
-        } else {
-            println!("[SignalClient] Writer is connected");
-        }
+        let message_len = string_packet.len() as u32;
+        let len_bytes = message_len.to_be_bytes();
 
         if let Some(writer) = &self.writer {
             println!(
-                "[SignalClient] Sending turn data to signal server: {}",
+                "[SignalClient] Sending packet to signal server: {}",
                 string_packet
             );
 
-            let result = writer
-                .clone()
-                .write_owned()
-                .await
-                .write_all(string_packet.as_bytes())
-                .await;
-
-            println!("[SignalClient] Packet sent: {}", string_packet);
-
-            match result {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e.to_string()),
+            let mut writer_guard = writer.write().await;
+            
+            // Отправляем длину сообщения
+            match writer_guard.write_all(&len_bytes).await {
+                Ok(_) => {
+                    // Отправляем само сообщение
+                    match writer_guard.write_all(string_packet.as_bytes()).await {
+                        Ok(_) => {
+                            println!("[SignalClient] Successfully sent packet");
+                            Ok(())
+                        }
+                        Err(e) => {
+                            println!("[SignalClient] Failed to send packet: {}", e);
+                            Err(e.to_string())
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("[SignalClient] Failed to send packet length: {}", e);
+                    Err(e.to_string())
+                }
             }
         } else {
-            Err("[SignalClient] Writer error".to_string())
+            println!("[SignalClient] Writer is not connected");
+            Err("[SignalClient] Writer is not connected".to_string())
         }
-    }
-
-    pub async fn extract_addr(public_addr: String) -> Result<(String, u16), String> {
-        let parts: Vec<&str> = public_addr.split(':').collect();
-
-        if parts.len() != 2 {
-            return Err(format!("Invalid peer info received: {}", public_addr));
-        }
-
-        let ip = parts[0].to_string();
-        let port: u16 = parts[1]
-            .parse()
-            .map_err(|e: std::num::ParseIntError| e.to_string())?;
-
-        Ok((ip, port))
     }
 }

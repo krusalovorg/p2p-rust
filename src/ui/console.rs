@@ -52,11 +52,13 @@ pub fn print_all_commands() {
     println!("{}", "  files - List all your files");
     println!("{}", "  fragments - List all your fragments");
     println!("{}", "  peers - List all peers");
+    println!("{}", "  search_peer <peer_id> - Search for a specific peer");
     println!("{}", "  connect <peer_id> - Connect to a peer");
     println!("{}", "  send_all <message> - Send a message to all peers");
     println!("{}", "  <message> - Send a message to the peer");
     println!("{}", "  get <session_key> - Get a file from the peer");
     println!("{}", "  upload <file_path> - Upload a file to the peer");
+    println!("{}", "  reserve <size_in_bytes> - Reserve storage space on peers");
     println!("{}", "  help - Show available commands");
 }
 
@@ -80,6 +82,30 @@ pub async fn console_manager(
     } else if trimmed_input == "peers" {
         if let Err(e) = api.request_peer_list().await {
             println!("{}", format!("[Peer] Failed to request peer list: {}", e).red());
+        }
+    } else if trimmed_input.starts_with("search_peer ") {
+        let peer_id = trimmed_input.strip_prefix("search_peer ").unwrap();
+        if let Err(e) = api.search_peer(peer_id.to_string()).await {
+            println!("{}", format!("[Peer] Failed to search peer: {}", e).red());
+        }
+    } else if trimmed_input.starts_with("reserve ") {
+        let size_str = trimmed_input.strip_prefix("reserve ").unwrap();
+        match size_str.parse::<u64>() {
+            Ok(size) => {
+                if let Err(e) = api.reserve_storage(size).await {
+                    println!("{}", format!("[Peer] Failed to reserve storage: {}", e).red());
+                } else {
+                    println!("{}", format!("[Peer] Storage reservation request sent for {} bytes", size).green());
+                }
+            },
+            Err(_) => println!("{}", "[Peer] Invalid size format. Please provide a number in bytes.".red()),
+        }
+    } else if trimmed_input.starts_with("valid_token ") {
+        let token = trimmed_input.strip_prefix("valid_token ").unwrap();
+        if let Err(e) = api.valid_token(token.to_string()).await {
+            println!("{}", format!("[Peer] Failed to validate token: {}", e).red());
+        } else {
+            println!("{}", format!("[Peer] Token validated successfully").green());
         }
     } else if trimmed_input.starts_with("connect ") {
         let peer_id = trimmed_input.strip_prefix("connect ").unwrap();
