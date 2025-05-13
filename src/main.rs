@@ -12,10 +12,12 @@ mod ui;
 mod packets;
 mod manager;
 mod crypto;
+mod contract;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;
 use crate::ui::print_all_files;
+use crate::contract::runtime::hardcoded_test_contract;
 
 fn create_command() -> Command {
     Command::new("P2P Server")
@@ -32,6 +34,7 @@ fn create_command() -> Command {
 
 #[tokio::main]
 async fn main() {
+    hardcoded_test_contract();
     let matches = create_command().get_matches();
 
     let db_path = matches.get_one::<String>("db-path")

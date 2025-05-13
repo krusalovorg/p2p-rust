@@ -34,6 +34,7 @@ tempfile = "3.19.1"
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 rand = { version = "0.9.1", features = ["std"] }
 hex = "0.4.3"
+wasmtime = "29.0.1"
 
 [dependencies.uuid]
 version = "1.12.1"

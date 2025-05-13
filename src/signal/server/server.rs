@@ -57,7 +57,7 @@ impl SignalServer {
 
         let server_arc = Arc::new(server);
 
-        let server_clone = Arc::clone(&server_arc);
+        let server_clone: Arc<SignalServer> = Arc::clone(&server_arc);
         tokio::spawn(async move {
             while let Some((peer, message)) = message_rx.recv().await {
                 server_clone
@@ -102,7 +102,7 @@ impl SignalServer {
 
             self.add_peer(peer.clone(), false).await.unwrap();
 
-            let self_clone = Arc::clone(&self);
+            let self_clone: Arc<SignalServer> = Arc::clone(&self);
             tokio::spawn(async move {
                 self_clone.handle_connection(peer.clone()).await;
             });
@@ -128,15 +128,15 @@ impl SignalServer {
             .push(client_arc.clone());
 
         // Запускаем обработчик сообщений от сигнального сервера
-        let self_clone = Arc::clone(&self);
-        if let Some(mut message_rx) = client_arc.get_message_receiver() {
-            tokio::spawn(async move {
-                while let Some(packet) = message_rx.recv().await {
-                    println!("[SignalServer] Received packet from signal server: {:?}", packet);
-                    self_clone.handle_signal_server_packet(packet).await;
-                }
-            });
-        }
+        // let self_clone = Arc::clone(&self);
+        // if let Some(mut message_rx) = client_arc.get_message_receiver() {
+        //     tokio::spawn(async move {
+        //         while let Some(packet) = message_rx.recv().await {
+        //             println!("[SignalServer] Received packet from signal server: {:?}", packet);
+        //             self_clone.handle_signal_server_packet(packet).await;
+        //         }
+        //     });
+        // }
 
         Ok(())
     }
