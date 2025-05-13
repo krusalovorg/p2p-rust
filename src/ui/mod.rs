@@ -1,3 +1,3 @@
 mod console;
 
-pub use console::print_all_files;
+pub use console::{print_all_files,console_manager};

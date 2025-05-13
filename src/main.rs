@@ -1,6 +1,5 @@
 use clap::{Arg, Command};
-#[macro_use]
-extern crate lazy_static;
+use peer::Peer;
 use std::path::PathBuf;
 
 mod config;
@@ -10,38 +9,18 @@ mod tunnel;
 mod db;
 mod peer;
 mod ui;
+mod packets;
+mod manager;
+mod crypto;
+mod contract;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;
-use crate::peer::run_peer;
 use crate::ui::print_all_files;
+use crate::contract::runtime::hardcoded_test_contract;
 
-lazy_static! {
-    pub static ref GLOBAL_DB: P2PDatabase = {
-        let matches = Command::new("P2P Server")
-            .arg(Arg::new("db-path")
-                .long("db-path")
-                .action(clap::ArgAction::Set)
-                .value_name("FILE")
-                .help("Path to the database directory"))
-            .get_matches();
-
-        let db_path = matches.get_one::<String>("db-path")
-            .map(|s| s.as_str())
-            .unwrap_or("./storage");
-
-        let path = PathBuf::from(db_path);
-        if !path.exists() {
-            std::fs::create_dir_all(&path).unwrap();
-        }
-        P2PDatabase::new(path.to_str().unwrap()).unwrap()
-    };
-}
-
-
-#[tokio::main]
-async fn main() {
-    let matches = Command::new("P2P Server")
+fn create_command() -> Command {
+    Command::new("P2P Server")
         .arg(Arg::new("signal")
             .long("signal")
             .action(clap::ArgAction::SetTrue)
@@ -51,16 +30,30 @@ async fn main() {
             .action(clap::ArgAction::Set)
             .value_name("FILE")
             .help("Path to the database directory"))
-        .get_matches();
+}
 
-    let db = &*GLOBAL_DB;
+#[tokio::main]
+async fn main() {
+    hardcoded_test_contract();
+    let matches = create_command().get_matches();
 
-    print_all_files();
+    let db_path = matches.get_one::<String>("db-path")
+        .map(|s| s.as_str())
+        .unwrap_or("./storage");
+
+    let path = PathBuf::from(db_path);
+    if !path.exists() {
+        std::fs::create_dir_all(&path).unwrap();
+    }
+    let db = P2PDatabase::new(path.to_str().unwrap()).unwrap();
+
+    print_all_files(&db);
 
     if matches.get_flag("signal") {
-        let signal_server = SignalServer::new();
+        let signal_server = SignalServer::new(&db).await;
         signal_server.run().await;
     } else {
-        run_peer(db).await;
+        let peer = Peer::new(&db).await;
+        peer.run().await;
     }
 }

@@ -3,6 +3,7 @@ use async_std::sync::RwLock;
 use async_std::{fs, task};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Number;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{str, thread};
@@ -20,11 +21,12 @@ struct FileMessage {
     data: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct Tunnel {
     pub local_port: u16,
     pub public_ip: String,
     pub public_port: u16,
-    socket: Option<Arc<UdpSocket>>,
+    pub socket: Option<Arc<UdpSocket>>,
     client: Option<SocketAddr>,
     pub is_connected: Arc<RwLock<bool>>,
 }
@@ -43,6 +45,22 @@ impl Tunnel {
             is_connected,
         }
     }
+    
+    pub async fn with_port(port: u16) -> Self {
+        let (public_ip, public_port) = Self::stun(port).await;
+        Tunnel {
+            local_port: port,
+            public_ip,
+            public_port,
+            socket: None,
+            client: None,
+            is_connected: Arc::new(RwLock::new(false)),
+        }
+    }
+
+    pub fn get_public_addr(&self) -> String {
+        return format!("{}:{}", self.public_ip, self.public_port);
+    }
 
     async fn stun(port: u16) -> (String, u16) {
         let client = Client::new(format!("0.0.0.0:{}", port), None).await;
@@ -51,8 +69,38 @@ impl Tunnel {
         }
         let mut client = client.unwrap();
 
-        // stun.l.google.com:19302
-        let res = client.binding_request("stun.nextcloud.com:443", None).await;
+        let stun_servers = vec![
+            "stun.l.google.com:19302",
+            "stun1.l.google.com:19302",
+            "stun2.l.google.com:19302",
+            "stun3.l.google.com:19302",
+            "stun4.l.google.com:19302",
+            "stun.stunprotocol.org:3478",
+            "stun.voipstunt.com:3478"
+        ];
+
+        let mut last_error = None;
+        for server in stun_servers {
+            println!("[DEBUG] Trying STUN server: {}", server);
+            let res = client.binding_request(server, None).await;
+            match res {
+                Ok(_) => {
+                    println!("[DEBUG] Successfully connected to STUN server: {}", server);
+                    break;
+                }
+                Err(e) => {
+                    println!("[DEBUG] Failed to connect to {}: {:?}", server, e);
+                    last_error = Some(e);
+                    continue;
+                }
+            }
+        }
+
+        if let Some(e) = last_error {
+            panic!("Failed to connect to any STUN server. Last error: {:?}", e);
+        }
+
+        let res = client.binding_request("stun.l.google.com:19302", None).await;
         if let Err(e) = res {
             panic!("Failed to send binding request: {:?}", e);
         }
@@ -165,15 +213,25 @@ impl Tunnel {
     }
 
     fn life_cycle(sock: Arc<UdpSocket>, client: SocketAddr, freq: u64) {
-        loop {
-            task::block_on(sock.send_to(b"KPL", client)).unwrap();
-            thread::sleep(Duration::from_secs_f64(1.0 / freq as f64));
+        println!("[STUN] Starting life cycle...");
+        let sock_clone = sock.clone();
 
-            let mut buf = vec![0u8; 9999];
-            while let Ok((n, reply_addr)) = task::block_on(sock.recv_from(&mut buf)) {
-                Self::handle_received_data(&buf[..n], reply_addr, client, sock.clone());
+        // Запуск отдельной задачи для отправки KPL
+        thread::spawn(move || {
+            loop {
+                println!("[STUN] Sending keep-alive...");
+                task::block_on(sock_clone.send_to(b"KPL", client)).unwrap();
+                thread::sleep(Duration::from_secs_f64(1.0 / freq as f64));
             }
-        }
+        });
+
+        // Основной цикл для обработки входящих данных
+        // loop {
+        //     let mut buf = vec![0u8; 9999];
+        //     while let Ok((n, reply_addr)) = task::block_on(sock.recv_from(&mut buf)) {
+        //         Self::handle_received_data(&buf[..n], reply_addr, client, sock.clone(), message_tx.clone());
+        //     }
+        // }
     }
 
     fn handle_received_data(
