@@ -45,7 +45,6 @@ impl ConnectionManager {
             act: "accept_connection".to_string(),
             to: Some(target_uuid.clone()),
             data: Some(TransportData::PeerWaitConnection(net_info)),
-            status: None,
             protocol: Protocol::STUN,
             uuid: my_key.clone(),
         };

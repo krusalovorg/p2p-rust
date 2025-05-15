@@ -8,13 +8,10 @@ use crate::peer::turn_tunnel;
 use colored::Colorize;
 use hex;
 use k256;
-use k256::ecdsa::signature::SignerMut;
 use serde_json;
 use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-use uuid::Uuid;
 
 impl ConnectionManager {
     pub async fn handle_incoming_packets(&self) {
@@ -187,7 +184,6 @@ impl ConnectionManager {
                                                     act: "test_turn".to_string(),
                                                     to: Some(from_uuid.clone()),
                                                     data: None,
-                                                    status: None,
                                                     protocol: Protocol::TURN,
                                                     uuid: self.db.get_or_create_peer_id().unwrap(),
                                                 };

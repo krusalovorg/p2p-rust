@@ -51,7 +51,6 @@ impl Connection {
                     peer_id: db.get_or_create_peer_id().unwrap(),
                 }),
             ),
-            status: None,
             protocol: Protocol::SIGNAL,
             uuid: db.get_or_create_peer_id().unwrap(),
         };
@@ -160,7 +159,6 @@ impl Connection {
                     peer_id: db.get_or_create_peer_id().unwrap(),
                 }),
             ),
-            status: None,
             protocol: Protocol::STUN,
             uuid: db.get_or_create_peer_id().unwrap(),
         };

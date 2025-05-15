@@ -61,7 +61,6 @@ impl ConnectionManager {
                     size_in_bytes: request.size_in_bytes,
                 },
             )),
-            status: None,
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };
@@ -95,7 +94,6 @@ impl ConnectionManager {
                     status,
                 },
             )),
-            status: None,
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };

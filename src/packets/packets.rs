@@ -109,15 +109,30 @@ pub struct PeerSearchRequest {
     pub search_id: String, // id поиска
     pub peer_id: String, // id пира инициатора поиска
     pub max_hops: u32, // максимальное количество прыжков
+    pub path: Vec<SearchPathNode>, // путь поиска от инициатора до текущего узла
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+pub struct SearchPathNode {
+    pub uuid: String,        // UUID узла
+    pub public_addr: String, // Публичный адрес узла
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct PeerSearchResponse {
-    pub search_id: String, // id поиска
-    pub peer_id: String, // id пира инициатора поиска
+    pub search_id: String,     // id поиска
+    pub peer_id: String,       // id пира инициатора поиска
     pub found_peer_id: String, // id пира найденного
-    pub public_addr: String, // публичный адрес ноды пира
-    pub hops: u32, // количество прыжков
+    pub public_addr: String,   // публичный адрес ноды пира
+    pub hops: u32,            // количество прыжков
+    pub path: Vec<SearchPathNode>, // путь поиска от инициатора до нашедшего пира
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct SignalServerInfo {
+    pub public_key: String,
+    pub public_ip: String,
+    pub port: i64,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
@@ -137,6 +152,7 @@ pub enum TransportData {
     FileData(FileData),
     PeerSearchRequest(PeerSearchRequest),
     PeerSearchResponse(PeerSearchResponse),
+    SignalServerInfo(SignalServerInfo),
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
@@ -144,7 +160,6 @@ pub struct TransportPacket {
     pub act: String,         //info, answer, wait_connection,
     pub to: Option<String>,  //кому отправляем данный пакет
     pub data: Option<TransportData>,
-    pub status: Option<Status>, // success, falied
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
     pub uuid: String,
 }

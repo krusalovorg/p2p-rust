@@ -68,7 +68,6 @@ mod tests {
             act: "test".to_string(),
             to: None,
             data: Some(TransportData::Message(Message { text: "test data".to_string() })),
-            status: Some(Status::SUCCESS),
             protocol: Protocol::SIGNAL,
             uuid: peer_id,
         };

@@ -9,9 +9,13 @@ use super::Peer;
 use crate::config::Config;
 use crate::db::P2PDatabase;
 use crate::packets::{
-    PeerWaitConnection, Protocol, SyncPeerInfo, SyncPeerInfoData, TransportData, TransportPacket,
+    PeerWaitConnection, Protocol, SignalServerInfo, SyncPeerInfo, SyncPeerInfoData, TransportData,
+    TransportPacket,
 };
 use crate::signal::client::SignalClient;
+use crate::signal::signal_servers::{
+    SignalServerInfo as StoredSignalServerInfo, SignalServersList,
+};
 use crate::tunnel::Tunnel;
 
 #[derive(Debug)]
@@ -27,8 +31,7 @@ pub struct SignalServer {
 }
 
 impl SignalServer {
-    pub async fn new(db: &P2PDatabase) -> Arc<Self> {
-        let config: Config = Config::from_file("config.toml");
+    pub async fn new(config: &Config, db: &P2PDatabase) -> Arc<Self> {
         let (message_tx, mut message_rx) = mpsc::channel(100);
 
         let tunnel = Tunnel::new().await;
@@ -57,6 +60,26 @@ impl SignalServer {
 
         let server_arc = Arc::new(server);
 
+        // Загружаем список сигнальных серверов и инициализируем соединения
+        if let Ok(mut servers_list) = SignalServersList::load_or_create() {
+            for server_info in servers_list.servers.iter() {
+                if (server_info.public_ip == "127.0.0.1"
+                    && server_info.port != config.signal_server_port) || server_info.public_ip != "127.0.0.1"
+                {
+                    let server_addr = format!("{}:{}", server_info.public_ip, server_info.port);
+                    let server_clone = Arc::clone(&server_arc);
+                    tokio::spawn(async move {
+                        if let Err(e) = server_clone.connect_to_signal_server(&server_addr).await {
+                            println!(
+                                "[SignalServer] Failed to connect to signal server {}: {}",
+                                server_addr, e
+                            );
+                        }
+                    });
+                }
+            }
+        }
+
         let server_clone: Arc<SignalServer> = Arc::clone(&server_arc);
         tokio::spawn(async move {
             while let Some((peer, message)) = message_rx.recv().await {
@@ -70,23 +93,6 @@ impl SignalServer {
     }
 
     pub async fn run(self: Arc<Self>) {
-        let config: Config = Config::from_file("config.toml");
-
-        // Запускаем подключение к другим сигнальным серверам
-        for server_addr in &config.other_signal_servers {
-            let server_addr = server_addr.clone();
-            let self_clone = Arc::clone(&self);
-            tokio::spawn(async move {
-                if let Err(e) = self_clone.connect_to_signal_server(&server_addr).await {
-                    println!(
-                        "[SignalServer] Failed to connect to signal server {}: {}",
-                        server_addr, e
-                    );
-                }
-            });
-        }
-
-        // Запускаем основной сервер
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(addr.clone()).await.unwrap();
         println!("[SignalServer] Running on {}", addr);
@@ -109,7 +115,7 @@ impl SignalServer {
         }
     }
 
-    async fn connect_to_signal_server(&self, server_addr: &str) -> Result<(), String> {
+    async fn connect_to_signal_server(self: Arc<Self>, server_addr: &str) -> Result<(), String> {
         let parts: Vec<&str> = server_addr.split(':').collect();
         if parts.len() != 2 {
             return Err(format!("Invalid server address format: {}", server_addr));
@@ -121,22 +127,25 @@ impl SignalServer {
         let mut client = SignalClient::new(&self.db);
         client.connect(ip, port, &self.ip, self.port as u16).await?;
 
+        let message_rx = client.get_message_receiver();
         let client_arc = Arc::new(client);
         self.connected_servers
             .write()
             .await
             .push(client_arc.clone());
 
-        // Запускаем обработчик сообщений от сигнального сервера
-        // let self_clone = Arc::clone(&self);
-        // if let Some(mut message_rx) = client_arc.get_message_receiver() {
-        //     tokio::spawn(async move {
-        //         while let Some(packet) = message_rx.recv().await {
-        //             println!("[SignalServer] Received packet from signal server: {:?}", packet);
-        //             self_clone.handle_signal_server_packet(packet).await;
-        //         }
-        //     });
-        // }
+        let self_clone: Arc<SignalServer> = Arc::clone(&self);
+        if let Some(mut message_rx) = message_rx {
+            tokio::spawn(async move {
+                while let Some(packet) = message_rx.recv().await {
+                    println!(
+                        "[SignalServer] Received packet from signal server: {:?}",
+                        packet
+                    );
+                    self_clone.handle_signal_server_packet(packet).await;
+                }
+            });
+        }
 
         Ok(())
     }
@@ -148,8 +157,8 @@ impl SignalServer {
                     match data {
                         TransportData::PeerSearchRequest(request) => {
                             println!(
-                                "[SignalServer] Received search request from signal server for peer {}",
-                                request.search_id
+                                "[SignalServer] Received search request from signal server for peer {} (from {})",
+                                request.search_id, request.peer_id
                             );
                             if let Err(e) = self
                                 .peer_search_manager
@@ -161,8 +170,12 @@ impl SignalServer {
                         }
                         TransportData::PeerSearchResponse(response) => {
                             println!(
-                                "[SignalServer] Received search response from signal server for peer {}",
-                                response.search_id
+                                "[SignalServer] Received search response from signal server for peer {} (from {})",
+                                response.search_id, response.peer_id
+                            );
+                            println!(
+                                "[SignalServer] Response details - found_peer: {}, public_addr: {}, hops: {}",
+                                response.found_peer_id, response.public_addr, response.hops
                             );
                             if let Err(e) = self
                                 .peer_search_manager
@@ -250,7 +263,6 @@ impl SignalServer {
             data: Some(TransportData::SyncPeerInfoData(SyncPeerInfoData {
                 peers: peers_info,
             })),
-            status: None,
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };
@@ -296,6 +308,40 @@ impl SignalServer {
 
         if let Some(data) = &message.data {
             match data {
+                TransportData::SignalServerInfo(server_info) => {
+                    println!(
+                        "[SignalServer] Received signal server info from peer {}: {:?}",
+                        peer_uuid, server_info
+                    );
+
+                    // Сохраняем информацию о сигнальном сервере
+                    let stored_info = StoredSignalServerInfo {
+                        public_key: server_info.public_key.clone(),
+                        public_ip: server_info.public_ip.clone(),
+                        port: server_info.port,
+                    };
+
+                    if let Ok(mut servers_list) = SignalServersList::load_or_create() {
+                        if let Err(e) = servers_list.add_server(stored_info.clone()) {
+                            println!("[SignalServer] Failed to add signal server to list: {}", e);
+                        } else {
+                            // Инициализируем соединение с новым сигнальным сервером
+                            let server_addr =
+                                format!("{}:{}", stored_info.public_ip, stored_info.port);
+                            let server_clone = Arc::clone(server);
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    server_clone.connect_to_signal_server(&server_addr).await
+                                {
+                                    println!(
+                                        "[SignalServer] Failed to connect to signal server {}: {}",
+                                        server_addr, e
+                                    );
+                                }
+                            });
+                        }
+                    }
+                }
                 TransportData::PeerSearchRequest(request) => {
                     println!(
                         "[SignalServer] Received search request for peer {} from {}",
@@ -307,7 +353,7 @@ impl SignalServer {
                         .await
                     {
                         println!("[SignalServer] Failed to handle search request: {}", e);
-                    }    
+                    }
                 }
                 TransportData::PeerSearchResponse(response) => {
                     println!(
@@ -345,7 +391,6 @@ impl SignalServer {
                                 data: Some(TransportData::StorageReservationRequest(
                                     request.clone(),
                                 )),
-                                status: None,
                                 protocol: Protocol::SIGNAL,
                                 uuid: self.db.get_or_create_peer_id().unwrap(),
                             };
@@ -360,7 +405,6 @@ impl SignalServer {
                         act: "reserve_storage_response".to_string(),
                         to: Some(response.peer_id.clone()),
                         data: Some(TransportData::StorageReservationResponse(response.clone())),
-                        status: None,
                         protocol: Protocol::SIGNAL,
                         uuid: self.db.get_or_create_peer_id().unwrap(),
                     };
@@ -423,7 +467,6 @@ impl SignalServer {
                                             data: Some(TransportData::PeerWaitConnection(
                                                 data.clone(),
                                             )),
-                                            status: message.status.clone(),
                                             protocol: Protocol::STUN,
                                             uuid: message.uuid.to_string(),
                                         };
@@ -476,7 +519,6 @@ impl SignalServer {
                                 act: message.act.to_string(),
                                 to: message.to.clone(),
                                 data: message.data.clone(),
-                                status: message.status.clone(),
                                 protocol: Protocol::TURN,
                                 uuid: message.uuid.to_string(),
                             };
@@ -602,7 +644,6 @@ impl SignalServer {
                         public_ip: open_tunnel.ip,
                         public_port: open_tunnel.port,
                     })),
-                    status: None,
                     protocol: Protocol::STUN,
                     uuid: about_peer.info.uuid.read().await.clone().unwrap(),
                 };

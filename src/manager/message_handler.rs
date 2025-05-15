@@ -20,7 +20,6 @@ impl ConnectionManager {
             data: Some(TransportData::Message(Message {
                 text: "Message received".to_string(),
             })),
-            status: None,
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };

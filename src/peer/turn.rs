@@ -20,7 +20,6 @@ pub async fn turn_tunnel(
             act: "try_turn_connection".to_string(),
             to: Some(packet.uuid.clone().to_string()),
             data: None,
-            status: None,
             protocol: Protocol::TURN,
             uuid: db.get_or_create_peer_id().unwrap(),
         };
@@ -42,7 +41,6 @@ pub async fn turn_tunnel(
             act: "accept_connection".to_string(),
             to: Some(packet.uuid.to_string()),
             data: None,
-            status: None,
             protocol: Protocol::TURN,
             uuid: db.get_or_create_peer_id().unwrap(),
         };

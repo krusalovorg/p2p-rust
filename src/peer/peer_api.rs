@@ -3,8 +3,7 @@ use crate::crypto::token::get_metadata_from_token;
 use crate::db::P2PDatabase;
 use crate::manager::ConnectionManager::ConnectionManager;
 use crate::packets::{
-    Message, PeerFileGet, PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol,
-    StorageReservationRequest, StorageValidTokenRequest, TransportData, TransportPacket,
+    Message, PeerFileGet, PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol, SearchPathNode, StorageReservationRequest, StorageValidTokenRequest, TransportData, TransportPacket
 };
 use crate::tunnel::Tunnel;
 use std::sync::Arc;
@@ -33,7 +32,6 @@ impl PeerAPI {
                 session_key: session_key,
                 peer_id: self.db.get_or_create_peer_id().unwrap(),
             })),
-            status: None,
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };
@@ -56,7 +54,6 @@ impl PeerAPI {
                 contents: base64::encode(contents),
                 peer_id: my_peer_id.clone().to_string(),
             })),
-            status: None,
             protocol: Protocol::TURN,
             uuid: my_peer_id.clone().to_string(),
         };
@@ -69,7 +66,6 @@ impl PeerAPI {
             act: "message".to_string(),
             to: Some(peer_id),
             data: Some(TransportData::Message(Message { text: message })),
-            status: None,
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };
@@ -90,7 +86,6 @@ impl PeerAPI {
                 public_port: tunnel_port,
                 public_ip: tunnel_ip,
             })),
-            status: None,
             protocol: Protocol::STUN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };
@@ -103,7 +98,6 @@ impl PeerAPI {
             act: "peer_list".to_string(),
             to: None,
             data: None,
-            status: None,
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };
@@ -121,7 +115,6 @@ impl PeerAPI {
                     size_in_bytes,
                 },
             )),
-            status: None,
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };
@@ -142,7 +135,6 @@ impl PeerAPI {
                         peer_id: self.db.get_or_create_peer_id().unwrap(),
                     },
                 )),
-                status: None,
                 protocol: Protocol::SIGNAL,
                 uuid: self.db.get_or_create_peer_id().unwrap(),
             };
@@ -161,8 +153,11 @@ impl PeerAPI {
                 peer_id: self.db.get_or_create_peer_id().unwrap(),
                 search_id: peer_id,
                 max_hops: 3,
+                path: vec![SearchPathNode {
+                    uuid: self.db.get_or_create_peer_id().unwrap(),
+                    public_addr: self.db.get_or_create_peer_id().unwrap(),
+                }],
             })),
-            status: None,
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };

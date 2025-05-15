@@ -13,8 +13,7 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub async fn new(db: &P2PDatabase) -> Self {
-        let config: Config = Config::from_file("config.toml");
+    pub async fn new(config: &Config, db: &P2PDatabase) -> Self {
         let connection_manager = Arc::new(ConnectionManager::new(db).await);
 
         let connection = Arc::new(

@@ -144,7 +144,6 @@ pub mod packets {
         pub act: String,        //info, answer, wait_connection,
         pub to: Option<String>, //кому отправляем данный пакет
         pub data: Option<TransportData>,
-        pub status: Option<Status>, // success, falied
         pub protocol: Protocol,     // TURN, STUN, SIGNAL
         pub uuid: String,
     }

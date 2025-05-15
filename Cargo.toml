@@ -35,6 +35,8 @@ k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 rand = { version = "0.9.1", features = ["std"] }
 hex = "0.4.3"
 wasmtime = "29.0.1"
+proc-macro2 = "1.0"
+syn = { version = "2.0", features = ["full"] }
 
 [dependencies.uuid]
 version = "1.12.1"
@@ -50,3 +52,7 @@ rustflags = ["-L", "E:\\VHP\\P2P-Server\\libs\\Packet.lib"]
 [lib]
 name = "p2p_server"
 path = "src/lib.rs"
+
+[[example]]
+name = "simulation"
+path = "examples/simulation.rs"

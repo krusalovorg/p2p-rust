@@ -48,7 +48,6 @@ impl ConnectionManager {
                 session_key: session_key,
                 peer_id: self.db.get_or_create_peer_id().unwrap(),
             })),
-            status: None,
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
         };
@@ -94,7 +93,6 @@ impl ConnectionManager {
                     contents: base64::encode(contents),
                     peer_id: self.db.get_or_create_peer_id().unwrap(),
                 })),
-                status: Some(Status::SUCCESS),
                 protocol: Protocol::TURN,
                 uuid: self.db.get_or_create_peer_id().unwrap(),
             };

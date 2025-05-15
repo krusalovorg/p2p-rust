@@ -116,7 +116,6 @@ impl SignalClient {
                     data: Some(TransportData::PeerInfo(PeerInfo {
                         peer_id: self.db.get_or_create_peer_id().unwrap(),
                     })),
-                    status: None,
                     protocol: Protocol::SIGNAL,
                     uuid: self.db.get_or_create_peer_id().unwrap(),
                 };
