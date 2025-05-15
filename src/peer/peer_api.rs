@@ -34,6 +34,7 @@ impl PeerAPI {
             })),
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         self.connection.send_packet(packet).await
@@ -56,6 +57,7 @@ impl PeerAPI {
             })),
             protocol: Protocol::TURN,
             uuid: my_peer_id.clone().to_string(),
+            nodes: vec![],
         };
 
         self.connection.send_packet(packet).await
@@ -65,9 +67,10 @@ impl PeerAPI {
         let packet = TransportPacket {
             act: "message".to_string(),
             to: Some(peer_id),
-            data: Some(TransportData::Message(Message { text: message })),
+            data: Some(TransportData::Message(Message { text: message, nonce: None })),
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         self.connection.send_packet(packet).await
@@ -88,6 +91,7 @@ impl PeerAPI {
             })),
             protocol: Protocol::STUN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         self.connection.send_packet(packet).await
@@ -100,6 +104,7 @@ impl PeerAPI {
             data: None,
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
         println!("{}", format!("[Peer] Sending peer list to signal server"));
         self.connection.send_packet(packet).await
@@ -117,6 +122,7 @@ impl PeerAPI {
             )),
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         self.connection.send_packet(packet).await
@@ -137,6 +143,7 @@ impl PeerAPI {
                 )),
                 protocol: Protocol::SIGNAL,
                 uuid: self.db.get_or_create_peer_id().unwrap(),
+                nodes: vec![],
             };
 
             self.connection.send_packet(packet).await
@@ -155,11 +162,13 @@ impl PeerAPI {
                 max_hops: 3,
                 path: vec![SearchPathNode {
                     uuid: self.db.get_or_create_peer_id().unwrap(),
-                    public_addr: self.db.get_or_create_peer_id().unwrap(),
+                    public_ip: self.connection.ip.clone(),
+                    public_port: self.connection.port.clone(),
                 }],
             })),
             protocol: Protocol::SIGNAL,
             uuid: self.db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         self.connection.send_packet(packet).await

@@ -10,6 +10,7 @@ pub struct InfoPeer {
     pub wait_connection: Arc<RwLock<bool>>,
     pub public_addr: Arc<RwLock<String>>,
     pub local_addr: String,
+    pub is_signal_server: Arc<RwLock<bool>>,
     pub uuid: Arc<RwLock<Option<String>>>,
 }
 
@@ -39,6 +40,7 @@ impl Peer {
                 public_addr: Arc::new(RwLock::new("".to_string())),
                 local_addr: socket.peer_addr().unwrap().to_string(),
                 uuid: Arc::new(RwLock::new(None)),
+                is_signal_server: Arc::new(RwLock::new(false)),
             });
         }
 
@@ -132,6 +134,15 @@ impl Peer {
                 Err(e.to_string())
             }
         }
+    }
+
+    pub async fn is_signal_server(&self) -> bool {
+        self.info.is_signal_server.read().await.clone()
+    }
+
+    pub async fn set_is_signal_server(&self, is_signal_server: bool) {
+        let mut guard = self.info.is_signal_server.write().await;
+        *guard = is_signal_server;
     }
 
     pub async fn add_open_tunnel(&self, peer_id: &str, ip: String, port: u16) {

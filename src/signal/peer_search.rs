@@ -14,7 +14,8 @@ use super::{peer, Peer};
 #[derive(Debug)]
 struct SearchCache {
     found_peer_id: String,
-    public_addr: String,
+    public_ip: String,
+    public_port: i64,
     expires_at: Instant,
 }
 
@@ -22,7 +23,8 @@ struct SearchCache {
 pub struct PeerSearchManager {
     peers: Arc<RwLock<Vec<Arc<Peer>>>>,
     public_key: String,
-    my_public_addr: String,
+    public_ip: String,
+    public_port: i64,
     connected_servers: Arc<RwLock<Vec<Arc<SignalClient>>>>,
     active_searches: Arc<RwLock<HashMap<String, mpsc::Sender<PeerSearchResponse>>>>,
     search_cache: Arc<RwLock<HashMap<String, SearchCache>>>,
@@ -31,14 +33,16 @@ pub struct PeerSearchManager {
 impl PeerSearchManager {
     pub fn new(
         public_key: String,
-        my_public_addr: String,
+        public_ip: String,
+        public_port: i64,
         peers: Arc<RwLock<Vec<Arc<Peer>>>>,
         connected_servers: Arc<RwLock<Vec<Arc<SignalClient>>>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             peers,
             public_key,
-            my_public_addr,
+            public_ip,
+            public_port,
             connected_servers,
             active_searches: Arc::new(RwLock::new(HashMap::new())),
             search_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -61,14 +65,17 @@ impl PeerSearchManager {
                 let mut path = request.path.clone();
                 path.push(SearchPathNode {
                     uuid: self.public_key.clone(),
-                    public_addr: self.my_public_addr.clone(),
+                    public_ip: self.public_ip.clone(),
+                    public_port: self.public_port,
                 });
+                let path_clone = path.clone();
                 
                 let response = PeerSearchResponse {
                     search_id: search_id.clone(),               // id поиска
                     peer_id: peer_id.clone(),                   // id пира инициатора поиска
                     found_peer_id: cache.found_peer_id.clone(), // id пира найденного
-                    public_addr: self.my_public_addr.clone(),   // публичный адрес ноды пира
+                    public_ip: self.public_ip.clone(),   // публичный адрес ноды пира
+                    public_port: self.public_port.clone(),
                     hops: 0,                                    // количество прыжков
                     path,                                       // путь поиска
                 };
@@ -85,6 +92,7 @@ impl PeerSearchManager {
                             data: Some(TransportData::PeerSearchResponse(response)),
                             protocol: Protocol::SIGNAL,
                             uuid: self.public_key.clone(),
+                            nodes: path_clone.clone(),
                         };
                         peer.send_data(&serde_json::to_string(&packet).unwrap())
                             .await;
@@ -108,14 +116,17 @@ impl PeerSearchManager {
                 let mut path = request.path.clone();
                 path.push(SearchPathNode {
                     uuid: self.public_key.clone(),
-                    public_addr: self.my_public_addr.clone(),
+                    public_ip: self.public_ip.clone(),
+                    public_port: self.public_port.clone(),
                 });
+                let path_clone = path.clone();
                 
                 let response = PeerSearchResponse {
                     search_id: search_id.clone(),             // id поиска
                     peer_id: peer_id.clone(),                 // id пира инициатора поиска
                     found_peer_id: search_id.clone(),         // id пира найденного
-                    public_addr: self.my_public_addr.clone(), // публичный адрес ноды пира
+                    public_ip: self.public_ip.clone(), // публичный адрес ноды пира
+                    public_port: self.public_port.clone(),
                     hops: 0,                                  // количество прыжков
                     path,                                     // путь поиска
                 };
@@ -127,7 +138,8 @@ impl PeerSearchManager {
                     search_id_clone.clone(),
                     SearchCache {
                         found_peer_id,
-                        public_addr: self.my_public_addr.clone(),
+                        public_ip: self.public_ip.clone(),
+                        public_port: self.public_port.clone(),
                         expires_at: Instant::now() + Duration::from_secs(300), // 5 минут
                     },
                 );
@@ -143,6 +155,7 @@ impl PeerSearchManager {
                             data: Some(TransportData::PeerSearchResponse(response)),
                             protocol: Protocol::SIGNAL,
                             uuid: self.public_key.clone(),
+                            nodes: path_clone,
                         };
                         initiator_peer.send_data(&serde_json::to_string(&packet).unwrap())
                             .await;
@@ -168,8 +181,10 @@ impl PeerSearchManager {
             let mut path = request.path.clone();
             path.push(SearchPathNode {
                 uuid: self.public_key.clone(),
-                public_addr: self.my_public_addr.clone(),
+                public_ip: self.public_ip.clone(),
+                public_port: self.public_port.clone(),
             });
+            let path_clone = path.clone();
             
             let new_request = PeerSearchRequest {
                 search_id: search_id.clone(),
@@ -184,6 +199,7 @@ impl PeerSearchManager {
                 data: Some(TransportData::PeerSearchRequest(new_request)),
                 protocol: Protocol::SIGNAL,
                 uuid: peer_id,
+                nodes: path_clone,
             };
 
             let servers = self.connected_servers.read().await;
@@ -223,12 +239,14 @@ impl PeerSearchManager {
                     if let Some(uuid) = peer.info.uuid.read().await.clone() {
                         if uuid == response.peer_id {
                             println!("[PeerSearch] Found initiator peer {} locally, sending response directly", response.peer_id);
+                            let path_clone = response.path.clone();
                             let packet = TransportPacket {
                                 act: "search_response".to_string(),
                                 to: Some(response.peer_id.clone()),
                                 data: Some(TransportData::PeerSearchResponse(response.clone())),
                                 protocol: Protocol::SIGNAL,
                                 uuid: self.public_key.clone(),
+                                nodes: path_clone,
                             };
                             peer.send_data(&serde_json::to_string(&packet).unwrap())
                                 .await;
@@ -250,12 +268,14 @@ impl PeerSearchManager {
                     if let Some(uuid) = peer.info.uuid.read().await.clone() {
                         if uuid == next_node.uuid {
                             println!("[PeerSearch] Found next node {} locally, sending response directly", next_node.uuid);
+                            let path_clone = response.path.clone();
                             let packet = TransportPacket {
                                 act: "search_response".to_string(),
                                 to: Some(next_node.uuid.clone()),
                                 data: Some(TransportData::PeerSearchResponse(response.clone())),
                                 protocol: Protocol::SIGNAL,
                                 uuid: self.public_key.clone(),
+                                nodes: path_clone,
                             };
                             peer.send_data(&serde_json::to_string(&packet).unwrap())
                                 .await;
@@ -267,12 +287,14 @@ impl PeerSearchManager {
                 
                 // Если не нашли локально, отправляем через сигнальный сервер
                 println!("[PeerSearch] Next node {} not found locally, forwarding through signal server", next_node.uuid);
+                let path_clone = response.path.clone();
                 let packet = TransportPacket {
                     act: "search_response".to_string(),
                     to: Some(next_node.uuid.clone()),
                     data: Some(TransportData::PeerSearchResponse(response.clone())),
                     protocol: Protocol::SIGNAL,
                     uuid: self.public_key.clone(),
+                    nodes: path_clone,
                 };
 
                 let servers = self.connected_servers.read().await;

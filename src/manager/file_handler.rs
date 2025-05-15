@@ -2,7 +2,7 @@ use crate::connection::Connection;
 use crate::db::{Fragment, Storage};
 use super::ConnectionManager::ConnectionManager;
 use crate::packets::{
-    FileData, PeerFileSaved, PeerUploadFile, Protocol, Status, TransportData, TransportPacket
+    FileData, PeerFileSaved, PeerUploadFile, Protocol, TransportData, TransportPacket
 };
 use base64;
 use colored::*;
@@ -50,6 +50,7 @@ impl ConnectionManager {
             })),
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         connection.send_packet(packet_feedback).await.map_err(|e| e.to_string())
@@ -95,6 +96,7 @@ impl ConnectionManager {
                 })),
                 protocol: Protocol::TURN,
                 uuid: self.db.get_or_create_peer_id().unwrap(),
+                nodes: vec![],
             };
 
             println!("{}", format!("[Peer] Sending file: {}", fragment.filename.clone()).cyan());

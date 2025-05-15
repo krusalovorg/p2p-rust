@@ -19,9 +19,11 @@ impl ConnectionManager {
             to: Some(from_uuid),
             data: Some(TransportData::Message(Message {
                 text: "Message received".to_string(),
+                nonce: None,
             })),
             protocol: Protocol::TURN,
             uuid: self.db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         connection

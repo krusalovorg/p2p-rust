@@ -22,6 +22,7 @@ pub async fn turn_tunnel(
             data: None,
             protocol: Protocol::TURN,
             uuid: db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
         let result = signal.send_packet(packet_hello).await;
         println!(
@@ -43,6 +44,7 @@ pub async fn turn_tunnel(
             data: None,
             protocol: Protocol::TURN,
             uuid: db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
         println!("{}", "[TURN] [accept_connection] Sending accept connection".yellow());
         let result = signal.send_packet(packet_hello).await;

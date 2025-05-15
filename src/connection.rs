@@ -23,6 +23,8 @@ pub struct Connection {
     pub tx: mpsc::Sender<Message>,
     writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
     reader: Arc<RwLock<tokio::io::ReadHalf<TcpStream>>>,
+    pub ip: String,
+    pub port: i64,
     db: Arc<P2PDatabase>,
 }
 
@@ -49,10 +51,12 @@ impl Connection {
             data: Some(
                 TransportData::PeerInfo(PeerInfo {
                     peer_id: db.get_or_create_peer_id().unwrap(),
+                    is_signal_server: false,
                 }),
             ),
             protocol: Protocol::SIGNAL,
             uuid: db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         if let Err(e) = Self::write_packet(&writer, &connect_packet).await {
@@ -73,6 +77,8 @@ impl Connection {
             tx, 
             writer, 
             reader,
+            ip: signal_server_ip,
+            port: signal_server_port,
             db: Arc::new(db.clone()),
         }
     }
@@ -157,10 +163,12 @@ impl Connection {
             data: Some(
                 TransportData::PeerInfo(PeerInfo {
                     peer_id: db.get_or_create_peer_id().unwrap(),
+                    is_signal_server: false,
                 }),
             ),
             protocol: Protocol::STUN,
             uuid: db.get_or_create_peer_id().unwrap(),
+            nodes: vec![],
         };
 
         Self::write_packet(writer, &connect_packet).await

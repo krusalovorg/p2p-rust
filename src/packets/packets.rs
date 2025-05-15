@@ -1,6 +1,7 @@
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerInfo {
     pub peer_id: String,
+    pub is_signal_server: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -56,6 +57,16 @@ pub enum Status {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Message {
     pub text: String,
+    pub nonce: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ProxyMessage {
+    pub text: String,
+    pub nonce: String,
+    pub from_peer_id: String,
+    pub end_peer_id: String,
+    pub request_id: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -115,7 +126,8 @@ pub struct PeerSearchRequest {
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct SearchPathNode {
     pub uuid: String,        // UUID узла
-    pub public_addr: String, // Публичный адрес узла
+    pub public_ip: String, // Публичный адрес узла
+    pub public_port: i64,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
@@ -123,7 +135,8 @@ pub struct PeerSearchResponse {
     pub search_id: String,     // id поиска
     pub peer_id: String,       // id пира инициатора поиска
     pub found_peer_id: String, // id пира найденного
-    pub public_addr: String,   // публичный адрес ноды пира
+    pub public_ip: String,   // публичный адрес ноды пира
+    pub public_port: i64,
     pub hops: u32,            // количество прыжков
     pub path: Vec<SearchPathNode>, // путь поиска от инициатора до нашедшего пира
 }
@@ -138,6 +151,7 @@ pub struct SignalServerInfo {
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub enum TransportData {
     Message(Message),
+    ProxyMessage(ProxyMessage),
     PeerInfo(PeerInfo),
     PeerWaitConnection(PeerWaitConnection),
     PeerFileGet(PeerFileGet),
@@ -162,6 +176,7 @@ pub struct TransportPacket {
     pub data: Option<TransportData>,
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
     pub uuid: String,
+    pub nodes: Vec<SearchPathNode>, // ноды через которых прошел пакет
 }
 
 impl std::fmt::Display for TransportPacket {

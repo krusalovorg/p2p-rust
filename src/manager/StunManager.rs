@@ -47,6 +47,7 @@ impl ConnectionManager {
             data: Some(TransportData::PeerWaitConnection(net_info)),
             protocol: Protocol::STUN,
             uuid: my_key.clone(),
+            nodes: vec![],
         };
 
         println!("[DEBUG] Sending accept_connection packet: {:?}", packet);

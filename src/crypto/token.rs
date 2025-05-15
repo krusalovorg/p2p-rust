@@ -2,7 +2,9 @@ use crate::packets::StorageToken;
 use base64;
 use hex;
 use k256;
+use k256::elliptic_curve::group::GroupEncoding;
 use serde_json;
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 
 pub async fn get_metadata_from_token(token: String) -> Result<StorageToken, String> {
     let token_bytes = base64::decode(&token).map_err(|e| e.to_string())?;
@@ -17,9 +19,8 @@ pub async fn validate_signature_token(token: String, db: &crate::db::P2PDatabase
     let token: StorageToken = serde_json::from_str(&token_str).map_err(|e| e.to_string())?;
     
     let mut signing_key = db.get_private_key().map_err(|e| e.to_string())?;
-    let verifying_key = signing_key.verifying_key();
-    let pub_key = verifying_key.to_encoded_point(true);
-    let pub_key_hex = hex::encode(pub_key.as_bytes());
+    let pub_key = signing_key.public_key();
+    let pub_key_hex = hex::encode(pub_key.to_encoded_point(false).as_bytes());
 
     if pub_key_hex == token.storage_provider {
         Ok(token)

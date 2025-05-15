@@ -46,6 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             signal_server_ip: format!("127.0.0.{}", i + 1),
             signal_server_port: 8000 + i as i64,
             storage_size: 1024 * 1024 * 100, // 100 MB
+            proxy_ip: "127.0.0.1".to_string(),
+            proxy_port: 80 + i as i64,
         };
         
         let db_path = PathBuf::from(format!("./simulation/signal_server_{}", i));
@@ -59,6 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             signal_server_ip: format!("127.0.0.{}", (i % servers) + 1),
             signal_server_port: 8000 + (i % servers) as i64,
             storage_size: 1024 * 1024 * 100, // 100 MB
+            proxy_ip: "127.0.0.1".to_string(),
+            proxy_port: 80 + i as i64,
         };
         let db_path = PathBuf::from(format!("./simulation/peer_{}", i));
         simulation.add_peer(&config, format!("peer_{}", i), db_path).await?;
