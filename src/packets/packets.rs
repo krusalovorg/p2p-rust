@@ -15,13 +15,13 @@ pub struct PeerWaitConnection {
 pub struct PeerFileSaved {
     pub peer_id: String,
     pub filename: String,
-    pub session_key: String,
+    pub token: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerFileGet {
     pub peer_id: String,
-    pub session_key: String,
+    pub token: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -29,6 +29,7 @@ pub struct PeerUploadFile {
     pub peer_id: String,
     pub filename: String,
     pub contents: String,
+    pub token: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -177,6 +178,12 @@ pub struct TransportPacket {
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
     pub uuid: String,
     pub nodes: Vec<SearchPathNode>, // ноды через которых прошел пакет
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct EncryptedData {
+    pub content: Vec<u8>,
+    pub nonce: [u8; 12],
 }
 
 impl std::fmt::Display for TransportPacket {

@@ -46,12 +46,17 @@ impl ConnectionManager {
 
         let token_base64 = base64::encode(serde_json::to_vec(&final_token).unwrap());
 
+        if let Err(e) = self.db.add_token(&request.peer_id, &token_base64, free_space) {
+            println!("[Peer] Failed to save token to database: {}", e);
+            return Err(format!("Failed to save token: {}", e));
+        }
+
         let response = TransportPacket {
             act: "reserve_storage_response".to_string(),
             to: Some(request.peer_id.clone()),
             data: Some(TransportData::StorageReservationResponse(
                 StorageReservationResponse {
-                    peer_id: self.db.get_or_create_peer_id().unwrap(),
+                    peer_id: request.peer_id,
                     token: token_base64,
                     size_in_bytes: request.size_in_bytes,
                 },

@@ -10,6 +10,14 @@ use tokio::time::sleep;
 use crate::packets::{Protocol, TransportPacket, TransportData, PeerInfo};
 use crate::db::P2PDatabase;
 
+const SHOW_LOGS: bool = true;
+
+fn log(message: &str) {
+    if SHOW_LOGS {
+        println!("{}", message);
+    }
+}
+
 #[derive(Debug)]
 pub enum Message {
     SendData(TransportPacket),
@@ -60,9 +68,9 @@ impl Connection {
         };
 
         if let Err(e) = Self::write_packet(&writer, &connect_packet).await {
-            println!("[Connection] Failed to send connect packet: {}", e);
+            log(&format!("[Connection] Failed to send connect packet: {}", e));
         } else {
-            println!("[Connection] Connect packet sent successfully");
+            log("[Connection] Connect packet sent successfully");
         }
 
         task::spawn(Self::process_messages(
@@ -98,14 +106,13 @@ impl Connection {
         }
 
         // Отправляем само сообщение
-        // println!("[Connection] Writing packet to socket: {:?}", packet);
         match writer.write_all(packet_str.as_bytes()).await {
             Ok(_) => {
-                println!("[Connection] Packet sent successfully");
+                log("[Connection] Packet sent successfully");
                 Ok(())
             }
             Err(e) => {
-                println!("[Connection] Failed to send packet: {}", e);
+                log(&format!("[Connection] Failed to send packet: {}", e));
                 Err(e.to_string())
             }
         }
@@ -118,39 +125,47 @@ impl Connection {
         writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
         db: Arc<P2PDatabase>,
     ) {
-        println!("[Connection] Processing messages");
+        log("[Connection] Processing messages started");
 
         sleep(Duration::from_millis(100)).await;
 
         match Self::send_peer_info_request(&writer, &db).await {
-            Ok(_) => (),
+            Ok(_) => log("[Connection] Peer info request sent successfully"),
             Err(e) => {
-                println!("[Connection] Failed to send peer info request: {}", e);
+                log(&format!("[Connection] Failed to send peer info request: {}", e));
             }
         }
 
+        log("[Connection] Starting message processing loop");
         while let Some(message) = rx.recv().await {
+            log("[Connection] Received message from channel");
             match message {
                 Message::SendData(packet) => {
-                    println!("[Connection] Received SendData message: {:?}", packet);
+                    log(&format!("[Connection] Processing SendData message: {:?}", packet));
                     if let Err(e) = Self::write_packet(&writer, &packet).await {
-                        println!("[Connection] Failed to send packet: {}", e);
+                        log(&format!("[Connection] Failed to send packet: {}", e));
+                    } else {
+                        log("[Connection] Packet sent successfully");
                     }
                 }
                 Message::GetResponse { tx } => {
+                    log("[Connection] Processing GetResponse message");
                     let response = match Self::receive_message(&reader).await {
                         Ok(response) => response,
                         Err(e) => {
-                            println!("[Connection] Failed to receive message: {}", e);
+                            log(&format!("[Connection] Failed to receive message: {}", e));
                             continue;
                         }
                     };
                     if let Err(e) = tx.send(response) {
-                        println!("[Connection] Failed to send response to channel: {:?}", e);
+                        log(&format!("[Connection] Failed to send response to channel: {:?}", e));
+                    } else {
+                        log("[Connection] Response sent successfully");
                     }
                 }
             }
         }
+        log("[Connection] Message processing loop ended");
     }
 
     pub async fn send_peer_info_request(
@@ -183,7 +198,7 @@ impl Connection {
         let mut len_bytes = [0u8; 4];
         if let Err(e) = reader.read_exact(&mut len_bytes).await {
             if e.kind() == std::io::ErrorKind::ConnectionReset {
-                println!("[Connection] Connection reset by peer: {}", e);
+                log(&format!("[Connection] Connection reset by peer: {}", e));
                 return Err("Connection reset by peer".to_string());
             }
             return Err(format!("Failed to read message length: {}", e));
@@ -194,7 +209,7 @@ impl Connection {
         let mut packet_bytes = vec![0u8; packet_len];
         if let Err(e) = reader.read_exact(&mut packet_bytes).await {
             if e.kind() == std::io::ErrorKind::ConnectionReset {
-                println!("[Connection] Connection reset by peer: {}", e);
+                log(&format!("[Connection] Connection reset by peer: {}", e));
                 return Err("Connection reset by peer".to_string());
             }
             return Err(format!("Failed to read message: {}", e));
@@ -207,7 +222,7 @@ impl Connection {
                 Ok(packet)
             }
             Err(e) => {
-                println!("[Connection] Failed to parse JSON: {}", e);
+                log(&format!("[Connection] Failed to parse JSON: {}", e));
                 Err(format!("Failed to parse JSON: {}", e))
             }
         }

@@ -35,7 +35,7 @@ impl P2PDatabase {
         {
             let mut table = tx.open_table(STORAGE_TABLE)?;
             let data = serde_json::to_string(&fragment).unwrap();
-            table.insert(fragment.session_key.as_str(), data.as_bytes())?;
+            table.insert(fragment.token.as_str(), data.as_bytes())?;
         }
 
         tx.commit()?;

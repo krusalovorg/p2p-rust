@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt}; // Добавляем split
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, RwLock}; // Добавляем mpsc
+use tokio::sync::{mpsc, RwLock};
+
+use crate::logger::{self, LOGGER}; // Добавляем mpsc
 
 #[derive(Clone, Debug)]
 pub struct InfoPeer {
@@ -68,24 +70,24 @@ impl Peer {
 
         // Отправляем длину сообщения (4 байта)
         if let Err(e) = writer.write_all(&len_bytes).await {
-            println!(
+            LOGGER.debug(&format!(
                 "Failed to send message length to peer {}: {}",
                 self.info.local_addr, e
-            );
+            ));
             return;
         }
 
         // Отправляем само сообщение
         if let Err(e) = writer.write_all(message.as_bytes()).await {
-            println!(
+            LOGGER.debug(&format!(
                 "Failed to send message to peer {}: {}",
                 self.info.local_addr, e
-            );
+            ));
         } else {
-            println!(
+            LOGGER.debug(&format!(
                 "[SendData] Message sent to peer {}: {}",
                 self.info.local_addr, message
-            );
+            ));
         }
     }
 
@@ -98,13 +100,13 @@ impl Peer {
             Ok(_) => {}
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::ConnectionReset {
-                    println!("Peer {} disconnected", self.info.local_addr);
+                    LOGGER.debug(&format!("Peer {} disconnected", self.info.local_addr));
                     return Err("Peer disconnected".to_string());
                 }
-                println!(
+                LOGGER.debug(&format!(
                     "Error reading message length from peer {}: {}",
                     self.info.local_addr, e
-                );
+                ));
                 return Err(e.to_string());
             }
         }
@@ -116,10 +118,10 @@ impl Peer {
         match reader.read_exact(&mut message_bytes).await {
             Ok(_) => {}
             Err(e) => {
-                println!(
+                LOGGER.debug(&format!(
                     "Error reading message from peer {}: {}",
                     self.info.local_addr, e
-                );
+                ));
                 return Err(e.to_string());
             }
         }
@@ -127,10 +129,10 @@ impl Peer {
         match String::from_utf8(message_bytes) {
             Ok(message) => Ok(message),
             Err(e) => {
-                println!(
+                LOGGER.debug(&format!(
                     "Error converting message to string from peer {}: {}",
                     self.info.local_addr, e
-                );
+                ));
                 Err(e.to_string())
             }
         }

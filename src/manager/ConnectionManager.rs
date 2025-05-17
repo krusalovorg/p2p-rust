@@ -1,7 +1,8 @@
 use crate::connection::{Connection, Message};
 use crate::db::P2PDatabase;
+use crate::http::http_proxy::HttpProxy;
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
-use crate::packets::TransportPacket;
+use crate::packets::{TransportData, TransportPacket};
 use crate::peer::peer_api::PeerAPI;
 use crate::tunnel::Tunnel;
 use crate::ui::console_manager;
@@ -24,18 +25,36 @@ pub struct ConnectionManager {
 
     pub connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
     pub db: Arc<P2PDatabase>,
+    pub http_proxy: Arc<HttpProxy>,
+    pub proxy_http_tx: mpsc::Sender<TransportPacket>,
+
+    pub proxy_http_tx_reciever: Arc<Mutex<mpsc::Sender<TransportPacket>>>,
 }
 
 impl ConnectionManager {
     pub async fn new(db: &P2PDatabase) -> Self {
         let (incoming_packet_tx, incoming_packet_rx) = mpsc::channel(100);
+        let (proxy_http_tx, mut proxy_http_rx) = mpsc::channel(1000);
+        let (proxy_http_tx_reciever, mut proxy_http_rx_reciever) = mpsc::channel(1000);
 
         let connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
         let connections_stun = Arc::new(Mutex::new(HashMap::<String, PeerOpenNetInfo>::new()));
 
-        ConnectionManager {
+        let db_arc = Arc::new(db.clone());
+        let proxy = Arc::new(HttpProxy::new(db_arc.clone(), proxy_http_tx.clone()));
+
+        let proxy_clone = Arc::clone(&proxy);
+        let proxy_clone_for_spawn = proxy_clone.clone();
+        
+        let mut proxy_http_rx_reciever = proxy_http_rx_reciever;
+
+        tokio::spawn(async move {
+            proxy_clone_for_spawn.start().await;
+        });
+
+        let manager = ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             connections_stun,
@@ -45,8 +64,48 @@ impl ConnectionManager {
 
             connections_turn,
 
-            db: Arc::new(db.clone()),
-        }
+            db: db_arc,
+            http_proxy: proxy,
+            proxy_http_tx,
+
+            proxy_http_tx_reciever: Arc::new(Mutex::new(proxy_http_tx_reciever)),
+        };
+
+        let manager_clone = manager.clone();
+        let manager_clone_for_http = manager_clone.clone();
+        tokio::spawn(async move {
+            while let Some(packet) = proxy_http_rx.recv().await {
+                println!(
+                    "[HTTP Proxy] Getted request from http proxy: {:?}",
+                    packet.to
+                );
+                manager_clone_for_http.auto_send_packet(packet).await;
+            }
+        });
+
+        let db_clone = manager_clone.db.clone();
+        let proxy_clone_rx = proxy_clone.clone();
+        tokio::spawn(async move {
+            while let Some(packet) = proxy_http_rx_reciever.recv().await {
+                println!("[HTTP Proxy] Getted request from http proxy: {:?}", packet.to);
+                let db = db_clone.clone();
+                let proxy = proxy_clone_rx.clone();
+                tokio::spawn(async move {
+                    if let Some(TransportData::ProxyMessage(msg)) = packet.data {
+                        println!("[HTTP Proxy] Getted request from http proxy: {:?}", msg.from_peer_id);
+                        let encrypted_response = base64::decode(&msg.text).unwrap();
+                        let nonce = base64::decode(&msg.nonce).unwrap();
+                        let nonce_array: [u8; 12] = nonce.try_into().unwrap();
+                        let response_bytes = db
+                            .decrypt_message(&encrypted_response, nonce_array, &msg.from_peer_id)
+                            .unwrap();
+                        proxy.set_response(msg.request_id.clone(), response_bytes).await;
+                    }
+                });
+            }
+        });
+
+        manager
     }
 
     pub async fn send_signaling_message(
@@ -71,6 +130,40 @@ impl ConnectionManager {
         }
     }
 
+    pub async fn auto_send_packet(&self, packet: TransportPacket) {
+        let connections = self.connections.lock().await;
+        let mut sended_by_uuid = false;
+        println!("Auto send packet: {:?}", packet);
+        for (id, connection) in connections.iter() {
+            if let Some(to) = &packet.to {
+                if id == to {
+                    if let Err(e) = connection.send_packet(packet.clone()).await {
+                        println!("[ERROR] Failed to send packet to connection {}: {}", id, e);
+                    } else {
+                        println!(
+                            "[HTTP Proxy] [AUTO SEND] Sended packet to connection {}: {:?}",
+                            id, packet.to
+                        );
+                        sended_by_uuid = true;
+                    }
+                }
+            }
+        }
+        if !sended_by_uuid {
+            for (id, connection) in connections.iter() {
+                if let Err(e) = connection.send_packet(packet.clone()).await {
+                    println!("[ERROR] Failed to send packet to connection {}: {}", id, e);
+                } else {
+                    println!(
+                        "[HTTP Proxy] [BROADCAST] Sended packet to connection {}: {:?}",
+                        id, packet.to
+                    );
+                    sended_by_uuid = true;
+                }
+            }
+        }
+    }
+
     pub async fn add_connection(&self, id: String, connection: Arc<Connection>) {
         let tx = self.incoming_packet_tx.clone();
         let mut connections = self.connections.lock().await;
@@ -86,11 +179,7 @@ impl ConnectionManager {
         let id_clone = id.clone();
         let connections_turn_clone = self.connections_turn.clone();
 
-        let api = PeerAPI::new(
-            connection.clone(),
-            &self.db,
-            &self,
-        );
+        let api = PeerAPI::new(connection.clone(), &self.db, &self);
         let api_clone = api.clone();
         let db_clone = self.db.clone();
 
@@ -132,6 +221,11 @@ impl ConnectionManager {
     pub async fn get_tunnel(&self, id: String) -> Option<Arc<Mutex<Tunnel>>> {
         let tunnels = self.tunnels.lock().await;
         tunnels.get(&id).cloned()
+    }
+
+    pub async fn have_connection_with_peer(&self, id: String) -> bool {
+        let connections_turn = self.connections_turn.read().await;
+        connections_turn.get(&id).is_some() && connections_turn.get(&id).unwrap().connected
     }
 
     pub async fn add_tunnel(&self, id: String, tunnel: Tunnel) {

@@ -6,5 +6,6 @@ mod secret_keys;
 mod storage;
 mod myfiles;
 mod dht;
+mod tokens;
 pub use db::P2PDatabase;
-pub use models::{DHTEntry, Fragment, SecretKeyInfo, Storage};
+pub use models::{DHTEntry, Fragment, SecretKeyInfo, Storage, TokenInfo};

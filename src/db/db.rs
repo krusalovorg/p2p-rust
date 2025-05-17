@@ -23,6 +23,8 @@ impl P2PDatabase {
                 write_txn.open_table(tables::PEER_INFO_TABLE)?;
                 write_txn.open_table(tables::SECRET_KEYS_TABLE)?;
                 write_txn.open_table(tables::DHT_TABLE)?;
+                write_txn.open_table(tables::TOKENS_TABLE)?;
+                write_txn.open_table(tables::VALIDATOR_STORAGE_TABLE)?;
             }
             write_txn.commit()?;
         }

@@ -15,6 +15,7 @@ mod manager;
 mod crypto;
 mod contract;
 mod http;
+mod logger;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;

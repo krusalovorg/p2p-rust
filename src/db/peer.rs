@@ -1,6 +1,9 @@
 use crate::db::tables::PEER_INFO_TABLE;
+use flate2::bufread::GzEncoder;
+use k256::elliptic_curve::group::UncompressedEncoding;
 use redb::Error;
 use anyhow::Result;
+use std::io::Read;
 
 use hex::{decode as hex_decode, encode as hex_encode};
 use k256::{
@@ -74,6 +77,24 @@ impl P2PDatabase {
         Ok(SigningKey::from_bytes(priv_key_bytes.as_slice().try_into().unwrap()).unwrap())
     }
 
+    pub fn encrypt_data(&self, data: &[u8]) -> Result<(Vec<u8>, [u8; 12])> {
+        let private_key = self.get_private_key()?;
+        let signing_key = SigningKey::from(&private_key);
+        let verifying_key = signing_key.verifying_key();
+        let pub_key = verifying_key.to_encoded_point(true);
+        let pub_key_bytes: [u8; 32] = pub_key.as_bytes()[1..33].try_into().unwrap();
+        Ok(encrypt(data, pub_key_bytes))
+    }
+
+    pub fn decrypt_data(&self, data: &[u8], nonce: &[u8; 12]) -> Result<Vec<u8>> {
+        let private_key = self.get_private_key()?;
+        let signing_key = SigningKey::from(&private_key);
+        let verifying_key = signing_key.verifying_key();
+        let pub_key = verifying_key.to_encoded_point(true);
+        let pub_key_bytes: [u8; 32] = pub_key.as_bytes()[1..33].try_into().unwrap();
+        Ok(decrypt(data, pub_key_bytes, *nonce))
+    }
+
     pub fn encrypt_message(&self, message: &[u8], peer_public_key: &str) -> Result<(Vec<u8>, [u8; 12])> {
         let private_key = self.get_private_key()?;
         let peer_pub_key_bytes = hex_decode(peer_public_key)?;
@@ -83,6 +104,7 @@ impl P2PDatabase {
         let peer_pub_key = PublicKey::from_encoded_point(&pub_point)
             .unwrap();
         
+        let signing_key = SigningKey::from(&private_key);
         let shared_secret = get_shared_secret(&private_key, &peer_pub_key_bytes);
         Ok(encrypt(message, shared_secret))
     }
@@ -94,7 +116,16 @@ impl P2PDatabase {
         let encoded_point = peer_pub_key.to_encoded_point(false);
         let peer_pub_key_bytes = encoded_point.as_bytes();
         
+        let signing_key = SigningKey::from(&private_key);
         let shared_secret = get_shared_secret(&private_key, peer_pub_key_bytes);
         Ok(decrypt(ciphertext, shared_secret, nonce))
+    }
+
+    pub fn uncompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut decoder = flate2::bufread::GzDecoder::new(data);
+        let mut decompressed_data = Vec::new();
+        decoder.read_to_end(&mut decompressed_data)
+            .map_err(|e| anyhow::anyhow!("Failed to decompress data: {}", e))?;
+        Ok(decompressed_data)
     }
 }
