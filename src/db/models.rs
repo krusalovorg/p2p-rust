@@ -24,6 +24,7 @@ pub struct Storage {
     pub storage_peer_key: String, // provider peer key
     pub uploaded_via_token: Option<String>, // base64 token
     pub token: String, // base64 token
+    pub token_hash: Option<String>, // hash of the token
     pub size: u64,
 }
 

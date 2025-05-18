@@ -245,10 +245,13 @@ pub async fn console_manager(
         print_tokens_info(db).await;
     } else if trimmed_input == "peers" {
         if let Err(e) = api.request_peer_list().await {
-            println!(
-                "{}",
-                format!("[Peer] Failed to request peer list: {}", e).red()
-            );
+            println!("{}", format!("[Peer] Failed to request peer list: {}", e).red());
+        }
+    } else if trimmed_input == "sync_fragments" {
+        if let Err(e) = api.sync_fragment_metadata().await {
+            println!("{}", format!("[Peer] Failed to sync fragment metadata: {}", e).red());
+        } else {
+            println!("{}", "[Peer] Fragment metadata sync started".green());
         }
     } else if trimmed_input.starts_with("set_public ") {
         let args: Vec<&str> = trimmed_input.split_whitespace().collect();
@@ -362,7 +365,7 @@ pub async fn console_manager(
             }
         }
 
-        println!("{}", "\nНастройка параметров загрузки:".cyan());
+        println!("\n{}", "Настройка параметров загрузки:".cyan());
         
         // Запрос на шифрование
         print!("{}", "Шифровать файлы? (y/n): ".yellow());

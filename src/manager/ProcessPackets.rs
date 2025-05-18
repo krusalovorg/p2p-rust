@@ -28,7 +28,11 @@ impl ConnectionManager {
                             if let Some(data) = &packet.data {
                                 match data {
                                     TransportData::ProxyMessage(data) => {
-                                        self.proxy_http_tx_reciever.lock().await.send(packet.clone()).await;
+                                        self.proxy_http_tx_reciever
+                                            .lock()
+                                            .await
+                                            .send(packet.clone())
+                                            .await;
                                     }
                                     TransportData::StorageReservationRequest(request) => {
                                         if let Err(e) = self
@@ -95,6 +99,51 @@ impl ConnectionManager {
                                                     ));
                                                 }
                                             }
+                                        }
+                                    }
+                                    TransportData::PeerFileDelete(data) => {
+                                        if let Err(e) = self
+                                            .handle_file_delete(
+                                                data.clone(),
+                                                &connection,
+                                                from_uuid.clone(),
+                                            )
+                                            .await
+                                        {
+                                            LOGGER.error(&format!(
+                                                "Failed to handle file delete: {}",
+                                                e
+                                            ));
+                                        }
+                                    }
+                                    TransportData::PeerFileMove(data) => {
+                                        if let Err(e) = self
+                                            .handle_file_move(
+                                                data.clone(),
+                                                &connection,
+                                                from_uuid.clone(),
+                                            )
+                                            .await
+                                        {
+                                            LOGGER.error(&format!(
+                                                "Failed to handle file move: {}",
+                                                e
+                                            ));
+                                        }
+                                    }
+                                    TransportData::PeerFileAccessChange(data) => {
+                                        if let Err(e) = self
+                                            .handle_file_access_change(
+                                                data.clone(),
+                                                &connection,
+                                                from_uuid.clone(),
+                                            )
+                                            .await
+                                        {
+                                            LOGGER.error(&format!(
+                                                "Failed to handle file access change: {}",
+                                                e
+                                            ));
                                         }
                                     }
                                     TransportData::StorageValidTokenResponse(response) => {
@@ -396,25 +445,10 @@ impl ConnectionManager {
                                                 packet_file_clone.data
                                             {
                                                 if let Err(e) = self.handle_file_saved(data).await {
-                                                    println!("[Peer] Failed to handle file saved: {}", e);
-                                                }
-                                            }
-                                        }
-                                        "get_file" => {
-                                            if let Some(TransportData::PeerFileGet(data)) =
-                                                packet_file_clone.data
-                                            {
-                                                if let Err(e) = self.handle_file_get(data, &connection, from_uuid.clone()).await {
-                                                    println!("[Peer] Failed to handle file get: {}", e);
-                                                }
-                                            }
-                                        }
-                                        "move_file" => {
-                                            if let Some(TransportData::PeerFileMove(data)) =
-                                                packet_file_clone.data
-                                            {
-                                                if let Err(e) = self.handle_file_move(data, &connection, from_uuid.clone()).await {
-                                                    println!("[Peer] Failed to handle file move: {}", e);
+                                                    println!(
+                                                        "[Peer] Failed to handle file saved: {}",
+                                                        e
+                                                    );
                                                 }
                                             }
                                         }

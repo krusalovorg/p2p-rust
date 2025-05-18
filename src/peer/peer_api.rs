@@ -3,9 +3,7 @@ use crate::crypto::token::get_metadata_from_token;
 use crate::db::P2PDatabase;
 use crate::manager::ConnectionManager::ConnectionManager;
 use crate::packets::{
-    EncryptedData, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove,
-    PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol, SearchPathNode,
-    StorageReservationRequest, StorageValidTokenRequest, TransportData, TransportPacket,
+    EncryptedData, FragmentMetadata, FragmentMetadataSync, GetFragmentsMetadata, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove, PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol, SearchPathNode, StorageReservationRequest, StorageValidTokenRequest, TransportData, TransportPacket
 };
 use crate::tunnel::Tunnel;
 use colored::Colorize;
@@ -256,8 +254,7 @@ impl PeerAPI {
     }
 
     pub async fn upload_file_default(&self, file_path: String) -> Result<(), UploadError> {
-        self.upload_file(file_path, true, false, false, "")
-            .await
+        self.upload_file(file_path, true, false, false, "").await
     }
 
     pub async fn send_message(&self, peer_id: String, message: String) -> Result<(), String> {
@@ -701,5 +698,64 @@ impl PeerAPI {
         }
 
         Ok(())
+    }
+
+    pub async fn get_fragments_metadata(&self, token_hash: String) -> Result<(), String> {
+        let my_peer_id = self.db.get_or_create_peer_id().unwrap();
+        let packet = TransportPacket {
+            act: "get_fragments_metadata".to_string(),
+            to: None,
+            data: Some(TransportData::GetFragmentsMetadata(GetFragmentsMetadata {
+                token_hash,
+            })),
+            protocol: Protocol::SIGNAL,
+            uuid: my_peer_id,
+            nodes: vec![],
+        };
+
+        self.connection.send_packet(packet).await
+    }
+
+    pub async fn sync_fragment_metadata(&self) -> Result<(), String> {
+        let my_peer_id = self.db.get_or_create_peer_id().unwrap();
+        let fragments = self
+            .db
+            .get_my_fragments()
+            .map_err(|e| format!("Ошибка при получении фрагментов: {}", e))?;
+
+        let metadata_fragments: Vec<FragmentMetadata> = fragments
+            .into_iter()
+            .map(|f| FragmentMetadata {
+                file_hash: f.file_hash,
+                mime: f.mime,
+                public: f.public,
+                encrypted: f.encrypted,
+                compressed: f.compressed,
+                auto_decompress: f.auto_decompress,
+                owner_key: f.owner_key,
+                storage_peer_key: f.storage_peer_key,
+                size: f.size,
+            })
+            .collect();
+
+        let sync_data = FragmentMetadataSync {
+            fragments: metadata_fragments,
+            peer_id: my_peer_id.clone(),
+        };
+
+        let packet = TransportPacket {
+            act: "sync_fragments".to_string(),
+            to: None,
+            data: Some(TransportData::FragmentMetadataSync(sync_data)),
+            protocol: Protocol::SIGNAL,
+            uuid: my_peer_id,
+            nodes: vec![],
+        };
+
+        println!(
+            "{}",
+            "[Peer] Отправка метаданных фрагментов на сигнальную ноду".cyan()
+        );
+        self.connection.send_packet(packet).await
     }
 }

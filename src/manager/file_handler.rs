@@ -5,12 +5,15 @@ use crate::db::{P2PDatabase, Storage};
 use crate::packets::{
     EncryptedData, FileData, Message, PeerFileGet, PeerFileSaved, PeerUploadFile, Protocol,
     TransportData, TransportPacket, PeerFileAccessChange, PeerFileDelete, PeerFileMove,
+    FragmentMetadataSync,
 };
 use base64;
 use colored::*;
 use serde_json;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use sha2::{Digest, Sha256};
+use hex;
 
 impl ConnectionManager {
     pub async fn handle_file_upload(
@@ -32,6 +35,8 @@ impl ConnectionManager {
             );
             return Err("Токен в запросе не совпадает с токеном в базе данных".to_string());
         }
+
+        let token_hash = hex::encode(Sha256::digest(data.token.as_bytes()));
 
         let validated_token = validate_signature_token(data.token.clone(), &self.db)
             .await
@@ -99,6 +104,7 @@ impl ConnectionManager {
                 file_hash: data.file_hash.clone(),
                 filename: data.filename.clone(),
                 token: data.token.clone(),
+                token_hash: Some(token_hash.clone()),
                 uploaded_via_token: Some(data.token.clone()),
                 owner_key: peer_id.clone(),
                 storage_peer_key: self.db.get_or_create_peer_id().unwrap(),
@@ -119,6 +125,7 @@ impl ConnectionManager {
             data: Some(TransportData::PeerFileSaved(PeerFileSaved {
                 filename: data.filename,
                 token: data.token,
+                token_hash: Some(token_hash),
                 storage_peer_key: self.db.get_or_create_peer_id().unwrap(),
                 owner_key: peer_id.clone(),
                 hash_file: data.file_hash,
@@ -146,6 +153,7 @@ impl ConnectionManager {
             file_hash: data.hash_file.clone(),
             filename: data.filename.clone(),
             token: token_clone.clone(),
+            token_hash: data.token_hash.clone(),
             uploaded_via_token: Some(data.token.clone()),
             owner_key: data.owner_key.clone(),
             storage_peer_key: data.storage_peer_key.clone(),

@@ -553,6 +553,49 @@ impl SignalServer {
                     };
                     self.auto_send_packet(packet).await;
                 }
+                TransportData::FragmentMetadataSync(data) => {
+                    log(&format!(
+                        "[SignalServer] Получены метаданные фрагментов от пира {}",
+                        data.peer_id
+                    ));
+                    
+                    for fragment in data.fragments.clone() {
+                        let storage = crate::db::Storage {
+                            file_hash: fragment.file_hash,
+                            filename: String::new(), 
+                            token: String::new(), 
+                            token_hash: None,
+                            uploaded_via_token: None,
+                            owner_key: fragment.owner_key,
+                            storage_peer_key: fragment.storage_peer_key,
+                            mime: fragment.mime,
+                            public: fragment.public,
+                            encrypted: fragment.encrypted,
+                            compressed: fragment.compressed,
+                            auto_decompress: fragment.auto_decompress,
+                            size: fragment.size,
+                        };
+
+                        if let Err(e) = self.db.add_storage_fragment(storage) {
+                            log(&format!(
+                                "[SignalServer] Ошибка при сохранении метаданных фрагмента: {}",
+                                e
+                            ));
+                        }
+                    }
+
+                    log("[SignalServer] Метаданные фрагментов успешно сохранены");
+
+                    let packet = TransportPacket {
+                        act: "sync_fragments".to_string(),
+                        to: None,
+                        data: Some(TransportData::FragmentMetadataSync(data.clone())),
+                        protocol: Protocol::SIGNAL,
+                        uuid: self.db.get_or_create_peer_id().unwrap(),
+                        nodes: vec![],
+                    };
+                    self.broadcast_to_servers(packet).await;
+                }
                 _ => {}
             }
         }

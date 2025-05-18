@@ -13,15 +13,16 @@ pub struct PeerWaitConnection {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerFileSaved {
-    pub owner_key: String,
-    pub storage_peer_key: String,
     pub filename: String,
     pub token: String,
+    pub token_hash: Option<String>,
+    pub storage_peer_key: String,
+    pub owner_key: String,
     pub hash_file: String,
     pub encrypted: bool,
     pub compressed: bool,
-    pub public: bool,
     pub auto_decompress: bool,
+    pub public: bool,
     pub size: u64,
     pub mime: String,
 }
@@ -177,6 +178,11 @@ pub struct PeerFileMove {
     pub new_path: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct GetFragmentsMetadata {
+    pub token_hash: String,
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub enum TransportData {
     Message(Message),
@@ -199,6 +205,8 @@ pub enum TransportData {
     PeerFileAccessChange(PeerFileAccessChange),
     PeerFileDelete(PeerFileDelete),
     PeerFileMove(PeerFileMove),
+    FragmentMetadataSync(FragmentMetadataSync),
+    GetFragmentsMetadata(GetFragmentsMetadata),
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
@@ -230,6 +238,25 @@ pub struct PeerFileDelete {
     pub file_hash: String,
     pub peer_id: String,
     pub token: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct FragmentMetadata {
+    pub file_hash: String,
+    pub mime: String,
+    pub public: bool,
+    pub encrypted: bool,
+    pub compressed: bool,
+    pub auto_decompress: bool,
+    pub owner_key: String,
+    pub storage_peer_key: String,
+    pub size: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct FragmentMetadataSync {
+    pub fragments: Vec<FragmentMetadata>,
+    pub peer_id: String,
 }
 
 impl std::fmt::Display for TransportPacket {
