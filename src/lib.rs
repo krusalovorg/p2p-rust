@@ -12,3 +12,4 @@ pub mod contract;
 pub mod simulation;
 pub mod http;
 pub mod logger;
+pub mod commands;

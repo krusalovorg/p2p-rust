@@ -105,10 +105,14 @@ impl HttpProxy {
     }
 
     fn extract_peer_id(req: &Request<Incoming>) -> Option<String> {
+        println!("[HTTP Proxy] [DEBUG] Starting peer ID extraction");
+        
         // Проверяем заголовок host
         if let Some(host) = req.headers().get("host") {
             if let Ok(host_str) = host.to_str() {
+                println!("[HTTP Proxy] [DEBUG] Checking host header: {}", host_str);
                 if host_str.chars().all(|c| c.is_ascii_hexdigit()) {
+                    println!("[HTTP Proxy] [DEBUG] Found valid peer ID in host: {}", host_str);
                     return Some(host_str.to_string());
                 }
             }
@@ -117,9 +121,12 @@ impl HttpProxy {
         // Проверяем заголовок referer
         if let Some(referer) = req.headers().get("referer") {
             if let Ok(referer_str) = referer.to_str() {
-                if let Some(last_segment) = referer_str.split('/').last() {
-                    if last_segment.chars().all(|c| c.is_ascii_hexdigit()) {
-                        return Some(last_segment.to_string());
+                println!("[HTTP Proxy] [DEBUG] Checking referer header: {}", referer_str);
+                // Ищем первый сегмент, который является hex-кодом
+                for segment in referer_str.split('/') {
+                    if !segment.is_empty() && segment.chars().all(|c| c.is_ascii_hexdigit()) {
+                        println!("[HTTP Proxy] [DEBUG] Found valid peer ID in referer: {}", segment);
+                        return Some(segment.to_string());
                     }
                 }
             }
@@ -127,25 +134,31 @@ impl HttpProxy {
 
         // Проверяем путь URI
         let path = req.uri().path();
-        if let Some(last_segment) = path.split('/').last() {
-            if last_segment.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Some(last_segment.to_string());
+        println!("[HTTP Proxy] [DEBUG] Checking URI path: {}", path);
+        // Ищем первый сегмент, который является hex-кодом
+        for segment in path.split('/') {
+            if !segment.is_empty() && segment.chars().all(|c| c.is_ascii_hexdigit()) {
+                println!("[HTTP Proxy] [DEBUG] Found valid peer ID in URI path: {}", segment);
+                return Some(segment.to_string());
             }
         }
 
         // Проверяем query параметры
         if let Some(query) = req.uri().query() {
+            println!("[HTTP Proxy] [DEBUG] Checking query parameters: {}", query);
             for param in query.split('&') {
                 let parts: Vec<&str> = param.split('=').collect();
                 if parts.len() == 2 {
                     let value = parts[1];
                     if value.chars().all(|c| c.is_ascii_hexdigit()) {
+                        println!("[HTTP Proxy] [DEBUG] Found valid peer ID in query: {}", value);
                         return Some(value.to_string());
                     }
                 }
             }
         }
 
+        println!("[HTTP Proxy] [DEBUG] No valid peer ID found in request");
         None
     }
 
@@ -154,24 +167,35 @@ impl HttpProxy {
         req: &Request<Incoming>,
         client_ip: &str,
     ) -> String {
+        println!("[HTTP Proxy] [DEBUG] Starting peer ID extraction for client IP: {}", client_ip);
         let mut peer_id = None;
 
+        // Пробуем извлечь peer ID из запроса
         if peer_id.is_none() {
             if let Some(extracted) = Self::extract_peer_id(req) {
+                println!("[HTTP Proxy] [DEBUG] Successfully extracted peer ID from request: {}", extracted);
                 peer_id = Some(extracted);
             } else {
+                println!("[HTTP Proxy] [DEBUG] No peer ID found in request, checking client mapping");
                 peer_id = self.get_peer_for_client(client_ip).await;
+                if let Some(id) = &peer_id {
+                    println!("[HTTP Proxy] [DEBUG] Found peer ID in client mapping: {}", id);
+                }
             }
         }
 
+        // Если peer ID не найден, проверяем куки
         if peer_id.is_none() {
+            println!("[HTTP Proxy] [DEBUG] Checking cookies for peer ID");
             if let Some(cookie_header) = req.headers().get("cookie") {
                 if let Ok(cookie_str) = cookie_header.to_str() {
+                    println!("[HTTP Proxy] [DEBUG] Cookie header: {}", cookie_str);
                     for cookie in cookie_str.split(';') {
                         let parts: Vec<&str> = cookie.trim().split('=').collect();
                         if parts.len() == 2 && parts[0] == "peer_id" {
                             let value = parts[1];
                             if value.chars().all(|c| c.is_ascii_hexdigit()) {
+                                println!("[HTTP Proxy] [DEBUG] Found valid peer ID in cookie: {}", value);
                                 peer_id = Some(value.to_string());
                                 break;
                             }
@@ -181,9 +205,13 @@ impl HttpProxy {
             }    
         }
 
-        let peer_id = peer_id.unwrap_or_else(|| "".to_string());
+        let peer_id = peer_id.unwrap_or_else(|| {
+            println!("[HTTP Proxy] [DEBUG] No peer ID found, using empty string");
+            "".to_string()
+        });
         
         if !peer_id.is_empty() {
+            println!("[HTTP Proxy] [DEBUG] Setting peer ID {} for client {}", peer_id, client_ip);
             self.set_peer_for_client(client_ip.to_string(), peer_id.clone()).await;
         }
 
@@ -264,17 +292,20 @@ impl HttpProxy {
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(response)) => {
                 let mut header_end = 0;
-                for i in 0..response.len().saturating_sub(3) {
-                    if &response[i..i + 4] == b"\r\n\r\n" {
-                        header_end = i + 4;
-                        break;
-                    }
+                let response_str = String::from_utf8_lossy(&response);
+                
+                // Ищем разделитель заголовков
+                if let Some(pos) = response_str.find("\r\n\r\n") {
+                    header_end = pos + 4;
+                } else if let Some(pos) = response_str.find("\n\n") {
+                    header_end = pos + 2;
                 }
 
                 if header_end == 0 {
+                    println!("[HTTP Proxy] Failed to find header separator in response");
                     return Ok(Response::builder()
                         .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(full("Failed to parse response"))
+                        .body(full("Failed to parse response: Invalid HTTP format"))
                         .unwrap());
                 }
 

@@ -12,6 +12,7 @@ impl P2PDatabase {
         let token_info = TokenInfo {
             token: token.to_string(),
             free_space,
+            used_space: 0,
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

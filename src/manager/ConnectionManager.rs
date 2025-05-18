@@ -1,3 +1,4 @@
+use crate::commands::{create_base_commands, get_db_path, get_path_blobs};
 use crate::connection::{Connection, Message};
 use crate::db::P2PDatabase;
 use crate::http::http_proxy::HttpProxy;
@@ -29,6 +30,7 @@ pub struct ConnectionManager {
     pub proxy_http_tx: mpsc::Sender<TransportPacket>,
 
     pub proxy_http_tx_reciever: Arc<Mutex<mpsc::Sender<TransportPacket>>>,
+    pub path_blobs: String,
 }
 
 impl ConnectionManager {
@@ -54,6 +56,9 @@ impl ConnectionManager {
             proxy_clone_for_spawn.start().await;
         });
 
+        let commands = create_base_commands();
+        let path_blobs = get_path_blobs(&commands.get_matches());
+
         let manager = ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
@@ -69,6 +74,7 @@ impl ConnectionManager {
             proxy_http_tx,
 
             proxy_http_tx_reciever: Arc::new(Mutex::new(proxy_http_tx_reciever)),
+            path_blobs,
         };
 
         let manager_clone = manager.clone();

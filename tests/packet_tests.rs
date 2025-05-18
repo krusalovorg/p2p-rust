@@ -23,7 +23,8 @@ mod tests {
     fn test_peer_wait_connection_serialization() {
         let wait_conn = PeerWaitConnection {
             connect_peer_id: "peer2".to_string(),
-            public_addr: "".to_string(),
+            public_ip: "".to_string(),
+            public_port: 8080,  
         };
 
         let serialized = serde_json::to_string(&wait_conn).unwrap();
@@ -38,6 +39,10 @@ mod tests {
             peer_id: "peer1".to_string(),
             filename: "test.txt".to_string(),
             session_key: "session123".to_string(),
+            hash_file: "hash123".to_string(),
+            encrypted: true,
+            compressed: true,
+            public: true,
         };
 
         let serialized = serde_json::to_string(&file_saved).unwrap();

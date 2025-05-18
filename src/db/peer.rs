@@ -122,7 +122,7 @@ impl P2PDatabase {
     }
 
     pub fn uncompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut decoder = flate2::bufread::GzDecoder::new(data);
+        let mut decoder = flate2::read::GzDecoder::new(data);
         let mut decompressed_data = Vec::new();
         decoder.read_to_end(&mut decompressed_data)
             .map_err(|e| anyhow::anyhow!("Failed to decompress data: {}", e))?;

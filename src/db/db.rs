@@ -19,7 +19,6 @@ impl P2PDatabase {
             let write_txn = db.begin_write()?;
             {
                 write_txn.open_table(tables::STORAGE_TABLE)?;
-                write_txn.open_table(tables::MYFILES_TABLE)?;
                 write_txn.open_table(tables::PEER_INFO_TABLE)?;
                 write_txn.open_table(tables::SECRET_KEYS_TABLE)?;
                 write_txn.open_table(tables::DHT_TABLE)?;

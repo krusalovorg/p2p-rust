@@ -5,21 +5,26 @@ pub struct Fragment {
     pub uuid_peer: String,
     pub token: String,
     pub filename: String,
+    pub hash_file: String,
+    pub encrypted: bool,
+    pub compressed: bool,
+    pub public: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Storage {
-    pub token: String,
+    pub file_hash: String, // sha256
     pub filename: String,
-    pub owner_id: String,
-    pub storage_peer_id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SecretKeyInfo {
-    pub owner_id: String,
-    pub access_key: String,
-    pub size: usize,
+    pub mime: String, // mime type for http proxy
+    pub public: bool, // true if file is public (not encrypted)
+    pub encrypted: bool, // true if file is encrypted
+    pub compressed: bool, // true if file is compressed
+    pub auto_decompress: bool, // true if file should be automatically decompressed
+    pub owner_key: String, // owner public key
+    pub storage_peer_key: String, // provider peer key
+    pub uploaded_via_token: Option<String>, // base64 token
+    pub token: String, // base64 token
+    pub size: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -33,6 +38,7 @@ pub struct DHTEntry {
 pub struct TokenInfo {
     pub token: String,
     pub free_space: u64,
+    pub used_space: u64,
     pub timestamp: u64,
 }
 

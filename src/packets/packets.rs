@@ -13,23 +13,38 @@ pub struct PeerWaitConnection {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerFileSaved {
-    pub peer_id: String,
+    pub owner_key: String,
+    pub storage_peer_key: String,
     pub filename: String,
     pub token: String,
+    pub hash_file: String,
+    pub encrypted: bool,
+    pub compressed: bool,
+    pub public: bool,
+    pub auto_decompress: bool,
+    pub size: u64,
+    pub mime: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerFileGet {
     pub peer_id: String,
-    pub token: String,
+    pub file_hash: String,
+    pub token: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerUploadFile {
     pub peer_id: String,
+    pub file_hash: String,
     pub filename: String,
     pub contents: String,
     pub token: String,
+    pub mime: String,
+    pub public: bool,
+    pub encrypted: bool,
+    pub compressed: bool,
+    pub auto_decompress: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -75,6 +90,11 @@ pub struct FileData {
     pub filename: String,
     pub contents: String,
     pub peer_id: String,
+    pub hash_file: String,
+    pub encrypted: bool,
+    pub compressed: bool,
+    pub public: bool,
+    pub auto_decompress: bool,
 }
 
 
@@ -149,6 +169,14 @@ pub struct SignalServerInfo {
     pub port: i64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PeerFileMove {
+    pub file_hash: String,
+    pub peer_id: String,
+    pub token: String,
+    pub new_path: String,
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub enum TransportData {
     Message(Message),
@@ -168,6 +196,9 @@ pub enum TransportData {
     PeerSearchRequest(PeerSearchRequest),
     PeerSearchResponse(PeerSearchResponse),
     SignalServerInfo(SignalServerInfo),
+    PeerFileAccessChange(PeerFileAccessChange),
+    PeerFileDelete(PeerFileDelete),
+    PeerFileMove(PeerFileMove),
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
@@ -184,6 +215,21 @@ pub struct TransportPacket {
 pub struct EncryptedData {
     pub content: Vec<u8>,
     pub nonce: [u8; 12],
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PeerFileAccessChange {
+    pub file_hash: String,
+    pub public: bool,
+    pub peer_id: String,
+    pub token: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PeerFileDelete {
+    pub file_hash: String,
+    pub peer_id: String,
+    pub token: String,
 }
 
 impl std::fmt::Display for TransportPacket {
