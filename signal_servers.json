@@ -2,7 +2,7 @@
   "servers": [
     {
       "public_key": "021b861ef0b2e2ea345e05e434a005792eb4d1dcdda8944078e6349926e0248f49",
-      "public_ip": "127.0.0.1",
+      "public_ip": "212.109.220.163",
       "port": 3031
     }
   ]
