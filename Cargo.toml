@@ -47,6 +47,8 @@ bytes = "1.10.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 flate2 = "1.0"
 mime_guess = "2.0.4"
+dashmap = "6.1.0"
+chrono = "0.4"
 
 [dependencies.uuid]
 version = "1.12.1"

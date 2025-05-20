@@ -5,5 +5,6 @@ mod peer;
 mod storage;
 mod dht;
 mod tokens;
+mod stats;
 pub use db::P2PDatabase;
-pub use models::{Fragment, Storage};
+pub use models::Storage;

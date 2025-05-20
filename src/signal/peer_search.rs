@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
+use crate::crypto::crypto::generate_uuid;
 use crate::packets::{
     PeerInfo, PeerSearchRequest, PeerSearchResponse, Protocol, SearchPathNode, TransportData, TransportPacket,
 };
@@ -83,7 +84,7 @@ impl PeerSearchManager {
                 // Сначала проверяем локальных пиров
                 let peers = self.peers.read().await;
                 for peer in peers.iter() {
-                    let peer_uuid = peer.info.uuid.read().await;
+                    let peer_uuid = peer.info.peer_key.read().await;
                     if peer_uuid.as_ref() == Some(&peer_id) {
                         println!("[PeerSearch] Found initiator peer {} locally, sending response directly", peer_id);
                         let packet = TransportPacket {
@@ -91,7 +92,8 @@ impl PeerSearchManager {
                             to: Some(peer_id.clone()),
                             data: Some(TransportData::PeerSearchResponse(response)),
                             protocol: Protocol::SIGNAL,
-                            uuid: self.public_key.clone(),
+                            peer_key: self.public_key.clone(),
+                            uuid: generate_uuid(),
                             nodes: path_clone.clone(),
                         };
                         peer.send_data(&serde_json::to_string(&packet).unwrap())
@@ -110,7 +112,7 @@ impl PeerSearchManager {
         let peers = self.peers.read().await;
         println!("[PeerSearch] Checking {} local peers", peers.len());
         for peer in peers.iter() {
-            let peer_uuid = peer.info.uuid.read().await;
+            let peer_uuid = peer.info.peer_key.read().await;
             if peer_uuid.as_ref() == Some(&search_id) {
                 println!("[PeerSearch] Found peer {} locally", search_id);
                 let mut path = request.path.clone();
@@ -146,7 +148,7 @@ impl PeerSearchManager {
 
                 // Сначала проверяем локальных пиров
                 for initiator_peer in peers.iter() {
-                    let initiator_uuid = initiator_peer.info.uuid.read().await;
+                    let initiator_uuid = initiator_peer.info.peer_key.read().await;
                     if initiator_uuid.as_ref() == Some(&peer_id) {
                         println!("[PeerSearch] Found initiator peer {} locally, sending response directly", peer_id);
                         let packet = TransportPacket {
@@ -154,7 +156,8 @@ impl PeerSearchManager {
                             to: Some(peer_id.clone()),
                             data: Some(TransportData::PeerSearchResponse(response)),
                             protocol: Protocol::SIGNAL,
-                            uuid: self.public_key.clone(),
+                            peer_key: self.public_key.clone(),
+                            uuid: generate_uuid(),
                             nodes: path_clone,
                         };
                         initiator_peer.send_data(&serde_json::to_string(&packet).unwrap())
@@ -198,7 +201,8 @@ impl PeerSearchManager {
                 to: None,
                 data: Some(TransportData::PeerSearchRequest(new_request)),
                 protocol: Protocol::SIGNAL,
-                uuid: peer_id,
+                peer_key: peer_id,
+                uuid: generate_uuid(),
                 nodes: path_clone,
             };
 
@@ -236,8 +240,8 @@ impl PeerSearchManager {
                 // Сначала проверяем локальных пиров
                 let peers = self.peers.read().await;
                 for peer in peers.iter() {
-                    if let Some(uuid) = peer.info.uuid.read().await.clone() {
-                        if uuid == response.peer_id {
+                    if let Some(peer_key) = peer.info.peer_key.read().await.clone() {
+                        if peer_key == response.peer_id {
                             println!("[PeerSearch] Found initiator peer {} locally, sending response directly", response.peer_id);
                             let path_clone = response.path.clone();
                             let packet = TransportPacket {
@@ -245,7 +249,8 @@ impl PeerSearchManager {
                                 to: Some(response.peer_id.clone()),
                                 data: Some(TransportData::PeerSearchResponse(response.clone())),
                                 protocol: Protocol::SIGNAL,
-                                uuid: self.public_key.clone(),
+                                peer_key: self.public_key.clone(),
+                                uuid: generate_uuid(),
                                 nodes: path_clone,
                             };
                             peer.send_data(&serde_json::to_string(&packet).unwrap())
@@ -265,8 +270,8 @@ impl PeerSearchManager {
                 // Проверяем локальных пиров
                 let peers = self.peers.read().await;
                 for peer in peers.iter() {
-                    if let Some(uuid) = peer.info.uuid.read().await.clone() {
-                        if uuid == next_node.uuid {
+                    if let Some(peer_key) = peer.info.peer_key.read().await.clone() {
+                        if peer_key == next_node.uuid {
                             println!("[PeerSearch] Found next node {} locally, sending response directly", next_node.uuid);
                             let path_clone = response.path.clone();
                             let packet = TransportPacket {
@@ -274,7 +279,8 @@ impl PeerSearchManager {
                                 to: Some(next_node.uuid.clone()),
                                 data: Some(TransportData::PeerSearchResponse(response.clone())),
                                 protocol: Protocol::SIGNAL,
-                                uuid: self.public_key.clone(),
+                                peer_key: self.public_key.clone(),
+                                uuid: generate_uuid(),
                                 nodes: path_clone,
                             };
                             peer.send_data(&serde_json::to_string(&packet).unwrap())
@@ -293,7 +299,8 @@ impl PeerSearchManager {
                     to: Some(next_node.uuid.clone()),
                     data: Some(TransportData::PeerSearchResponse(response.clone())),
                     protocol: Protocol::SIGNAL,
-                    uuid: self.public_key.clone(),
+                    peer_key: self.public_key.clone(),
+                    uuid: generate_uuid(),
                     nodes: path_clone,
                 };
 

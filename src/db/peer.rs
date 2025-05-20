@@ -3,6 +3,7 @@ use flate2::bufread::GzEncoder;
 use k256::elliptic_curve::group::UncompressedEncoding;
 use redb::Error;
 use anyhow::Result;
+use uuid::Uuid;
 use std::io::Read;
 
 use hex::{decode as hex_decode, encode as hex_encode};
@@ -53,6 +54,12 @@ impl P2PDatabase {
 
             Ok(pub_key_hex)
         }
+    }
+
+    pub fn generate_uuid(&self) -> Result<String, Error> {
+        let uuid = Uuid::new_v4();
+        let uuid_hex = uuid.to_string();
+        Ok(uuid_hex)
     }
 
     pub fn get_private_key(&self) -> Result<SecretKey, Error> {

@@ -1,4 +1,4 @@
-use async_std::net::{SocketAddr, UdpSocket};
+use async_std::net::{SocketAddr, UdpSocket, IpAddr};
 use async_std::sync::RwLock;
 use async_std::{fs, task};
 use rand::Rng;
@@ -9,6 +9,7 @@ use std::time::Duration;
 use std::{str, thread};
 use stun_client::*;
 use tokio::time::timeout;
+use std::net::Ipv4Addr;
 
 #[derive(Serialize, Deserialize)]
 struct Message {
@@ -21,7 +22,7 @@ struct FileMessage {
     data: Vec<u8>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Tunnel {
     pub local_port: u16,
     pub public_ip: String,
@@ -80,12 +81,14 @@ impl Tunnel {
         ];
 
         let mut last_error = None;
+        let mut last_res = None;
         for server in stun_servers {
             println!("[DEBUG] Trying STUN server: {}", server);
             let res = client.binding_request(server, None).await;
             match res {
-                Ok(_) => {
+                Ok(response) => {
                     println!("[DEBUG] Successfully connected to STUN server: {}", server);
+                    last_res = Some(response);
                     break;
                 }
                 Err(e) => {
@@ -100,11 +103,7 @@ impl Tunnel {
             panic!("Failed to connect to any STUN server. Last error: {:?}", e);
         }
 
-        let res = client.binding_request("stun.l.google.com:19302", None).await;
-        if let Err(e) = res {
-            panic!("Failed to send binding request: {:?}", e);
-        }
-        let res = res.unwrap();
+        let res = last_res.unwrap();
 
         let xor_mapped_addr = Attribute::get_xor_mapped_address(&res);
         if let Some(addr) = xor_mapped_addr {
@@ -122,12 +121,70 @@ impl Tunnel {
         }
     }
 
+    fn get_local_ip() -> Option<IpAddr> {
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if let Ok(()) = socket.connect("8.8.8.8:80") {
+                if let Ok(addr) = socket.local_addr() {
+                    return Some(addr.ip());
+                }
+            }
+        }
+        None
+    }
+
     pub async fn make_connection(
         &mut self,
         ip: &str,
         port: u16,
         timeout_default: u64,
     ) -> Result<(), String> {
+        println!("[STUN] make_connection");
+        println!("[STUN] IP: {}", ip);
+        println!("[STUN] Public IP: {}", self.public_ip);
+        let local_ip = match Self::get_local_ip() {
+            Some(ip) => ip.to_string(),
+            None => return Err("[STUN] Не удалось определить локальный IP".to_string()),
+        };
+        println!("[STUN] Локальный IP: {}", local_ip);
+
+        // if ip == self.public_ip {
+        //     println!("[STUN] Обнаружено локальное соединение. Используем локальную сеть.");
+        //     let addr = format!("{}:{}", local_ip, port)
+        //         .parse::<SocketAddr>()
+        //         .expect("Invalid address");
+        //     let local_port = self.local_port;
+            
+        //     let sock = match UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await {
+        //         Ok(s) => Arc::new(s),
+        //         Err(e) => {
+        //             return Err(format!("[STUN] Failed to bind UDP socket: {:?}", e));
+        //         }
+        //     };
+
+        //     if let Err(e) = sock.send_to(b"Local Con. Request!", addr).await {
+        //         return Err(format!("[STUN] Failed to send local connection request: {:?}", e));
+        //     }
+
+        //     let mut buf = vec![0u8; 1024];
+        //     match timeout(Duration::from_secs(2), sock.recv_from(&mut buf)).await {
+        //         Ok(res) => match res {
+        //             Ok((_n, peer)) => {
+        //                 println!("[STUN] Локальное соединение установлено с {}:{}", peer.ip(), peer.port());
+        //                 self.client = Some(addr);
+        //                 self.socket = Some(sock.clone());
+        //                 self.is_connected = Arc::new(RwLock::new(true));
+        //                 return Ok(());
+        //             }
+        //             Err(e) => {
+        //                 return Err(format!("[STUN] Error while receiving data: {:?}", e));
+        //             }
+        //         },
+        //         Err(_) => {
+        //             return Err(format!("[STUN] Timeout while establishing local connection"));
+        //         }
+        //     }
+        // }
+
         let addr = format!("{}:{}", ip, port)
             .parse::<SocketAddr>()
             .expect("Invalid address");

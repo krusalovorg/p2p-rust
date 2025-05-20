@@ -3,12 +3,11 @@ use crate::db::P2PDatabase;
 use crate::manager::ConnectionTurnStatus;
 use crate::peer::peer_api::PeerAPI;
 use colored::*;
+use dashmap::DashMap;
 use hex;
-use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::RwLock;
 
 pub fn print_welcome() {
     println!("\n{}", r#"
@@ -195,6 +194,7 @@ pub fn print_all_commands() {
         ("tokens", "Показать все токены и их метаданные"),
         ("peers", "Список всех пиров"),
         ("virtual_storage", "Интерактивное управление виртуальным хранилищем"),
+        ("sync_fragments", "Синхронизировать метаданные фрагментов с сервером"),
         ("search_peer <peer_id>", "Поиск конкретного пира"),
         ("connect <peer_id>", "Подключиться к пиру"),
         ("send_all <message>", "Отправить сообщение всем пирам"),
@@ -222,7 +222,7 @@ pub fn print_all_commands() {
 
 pub async fn console_manager(
     api: Arc<PeerAPI>,
-    connections_turn: Arc<RwLock<HashMap<String, ConnectionTurnStatus>>>,
+    connections_turn: Arc<DashMap<String, ConnectionTurnStatus>>,
     db: &P2PDatabase,
 ) {
     let mut input = String::new();
@@ -249,9 +249,9 @@ pub async fn console_manager(
         }
     } else if trimmed_input == "sync_fragments" {
         if let Err(e) = api.sync_fragment_metadata().await {
-            println!("{}", format!("[Peer] Failed to sync fragment metadata: {}", e).red());
+            println!("{}", format!("[Peer] Ошибка при синхронизации фрагментов: {}", e).red());
         } else {
-            println!("{}", "[Peer] Fragment metadata sync started".green());
+            println!("{}", "[Peer] Синхронизация фрагментов запущена".green());
         }
     } else if trimmed_input.starts_with("set_public ") {
         let args: Vec<&str> = trimmed_input.split_whitespace().collect();
@@ -405,16 +405,16 @@ pub async fn console_manager(
                 println!("{}", "[Peer] Файл успешно загружен".green());
             }
         }
-    } else if connections_turn.read().await.len() > 0 {
-        let connections = connections_turn.read().await;
-        for (peer_id, _) in connections.iter() {
+    } else if connections_turn.len() > 0 {
+        let connections = connections_turn.iter();
+        for entry in connections {
             if let Err(e) = api
-                .send_message(peer_id.clone(), trimmed_input.to_string())
+                .send_message(entry.key().clone(), trimmed_input.to_string())
                 .await
             {
                 println!(
                     "{}",
-                    format!("[Peer] Failed to send message to {}: {}", peer_id, e).red()
+                    format!("[Peer] Failed to send message to {}: {}", entry.key(), e).red()
                 );
             }
         }

@@ -1,4 +1,5 @@
 use super::ConnectionManager::ConnectionManager;
+use crate::crypto::crypto::generate_uuid;
 use crate::http::proxy::handle_http_proxy_response;
 use crate::logger::LOGGER;
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
@@ -21,14 +22,54 @@ impl ConnectionManager {
                     ConnectionType::Signal(id) => {
                         if let Some(connection) = connection {
                             LOGGER.debug(&format!("Received signal packet: {:?}", packet));
-                            let from_uuid = packet.uuid.clone();
+                            let from_peer_key = packet.peer_key.clone();
                             let packet_clone = packet.clone();
                             let protocol_connection = packet.protocol.clone();
 
                             if let Some(data) = &packet.data {
                                 match data {
+                                    TransportData::PeerUploadFile(data) => {
+                                        if let Err(e) = self
+                                            .handle_file_upload(
+                                                &self.db,
+                                                data.clone(),
+                                                packet.uuid.clone(),
+                                                &connection,
+                                                from_peer_key.clone(),
+                                            )
+                                            .await
+                                        {
+                                            let formatted_error =
+                                                format!("Failed to handle file upload: {}", e);
+                                            LOGGER.error(&formatted_error);
+
+                                            let packet_error = TransportPacket {
+                                                act: "message".to_string(),
+                                                to: Some(from_peer_key.clone()),
+                                                data: Some(TransportData::Message(Message {
+                                                    text: formatted_error,
+                                                    nonce: None,
+                                                })),
+                                                protocol: Protocol::TURN,
+                                                peer_key: self.db.get_or_create_peer_id().unwrap(),
+                                                uuid: generate_uuid(),
+                                                nodes: vec![],
+                                            };
+
+                                            let _ = connection.send_packet(packet_error).await;
+                                        }
+                                    }
                                     TransportData::ProxyMessage(data) => {
-                                        self.proxy_http_tx_reciever
+                                        let _ = self
+                                            .proxy_http_tx_reciever
+                                            .lock()
+                                            .await
+                                            .send(packet.clone())
+                                            .await;
+                                    }
+                                    TransportData::FragmentSearchResponse(response) => {
+                                        let _ = self
+                                            .proxy_http_tx_reciever
                                             .lock()
                                             .await
                                             .send(packet.clone())
@@ -53,7 +94,7 @@ impl ConnectionManager {
                                             .handle_storage_valid_token_request(
                                                 token.token.clone(),
                                                 &connection,
-                                                from_uuid.clone(),
+                                                from_peer_key.clone(),
                                             )
                                             .await
                                         {
@@ -66,9 +107,10 @@ impl ConnectionManager {
                                     TransportData::PeerFileGet(data) => {
                                         if let Err(e) = self
                                             .handle_file_get(
+                                                packet.uuid.clone(),
                                                 data.clone(),
                                                 &connection,
-                                                from_uuid.clone(),
+                                                from_peer_key.clone(),
                                             )
                                             .await
                                         {
@@ -106,7 +148,7 @@ impl ConnectionManager {
                                             .handle_file_delete(
                                                 data.clone(),
                                                 &connection,
-                                                from_uuid.clone(),
+                                                from_peer_key.clone(),
                                             )
                                             .await
                                         {
@@ -121,7 +163,7 @@ impl ConnectionManager {
                                             .handle_file_move(
                                                 data.clone(),
                                                 &connection,
-                                                from_uuid.clone(),
+                                                from_peer_key.clone(),
                                             )
                                             .await
                                         {
@@ -136,7 +178,7 @@ impl ConnectionManager {
                                             .handle_file_access_change(
                                                 data.clone(),
                                                 &connection,
-                                                from_uuid.clone(),
+                                                from_peer_key.clone(),
                                             )
                                             .await
                                         {
@@ -263,13 +305,15 @@ impl ConnectionManager {
                                     )
                                     .await;
                                 });
+                            } else if packet.act == "request_fragments" {
+                                let _ = self.handle_fragments_request(packet, &connection).await;
                             } else if packet.act == "peer_list" {
                                 if let Some(TransportData::SyncPeerInfoData(peer_info_data)) =
                                     packet.data
                                 {
                                     LOGGER.peer("Received peer list:");
                                     for peer in peer_info_data.peers {
-                                        LOGGER.peer(&format!("Peer - UUID: {}", peer.uuid));
+                                        LOGGER.peer(&format!("Peer - KEY: {}", peer.uuid));
                                     }
                                 } else {
                                     LOGGER.error("Peer list data is missing.");
@@ -280,11 +324,11 @@ impl ConnectionManager {
                                     "wait_connection" => {
                                         LOGGER.debug(&format!(
                                             "Received wait_connection from {}",
-                                            from_uuid
+                                            from_peer_key
                                         ));
                                         let result = async {
                                             self.send_wait_connection(
-                                                packet.uuid.clone(),
+                                                packet.peer_key.clone(),
                                                 &connection,
                                                 self.db.get_or_create_peer_id().unwrap(),
                                             )
@@ -304,7 +348,7 @@ impl ConnectionManager {
                                     "accept_connection" => {
                                         LOGGER.debug(&format!(
                                             "Received accept_connection from {}",
-                                            from_uuid
+                                            from_peer_key
                                         ));
                                         let result = self
                                             .receive_accept_connection(
@@ -316,8 +360,8 @@ impl ConnectionManager {
                                         match result {
                                             Ok(_) => {
                                                 LOGGER.debug("Connection established successfully");
-                                                self.connections_turn.write().await.insert(
-                                                    from_uuid.clone(),
+                                                self.connections_turn.insert(
+                                                    from_peer_key.clone(),
                                                     ConnectionTurnStatus {
                                                         connected: true,
                                                         turn_connection: false,
@@ -329,8 +373,8 @@ impl ConnectionManager {
                                                     "Failed to establish connection: {}",
                                                     e
                                                 ));
-                                                self.connections_turn.write().await.insert(
-                                                    from_uuid.clone(),
+                                                self.connections_turn.insert(
+                                                    from_peer_key.clone(),
                                                     ConnectionTurnStatus {
                                                         connected: false,
                                                         turn_connection: true,
@@ -346,8 +390,8 @@ impl ConnectionManager {
                             } else if protocol_connection == Protocol::TURN
                                 && packet.act == "wait_connection"
                             {
-                                self.connections_turn.write().await.insert(
-                                    from_uuid.clone(),
+                                self.connections_turn.insert(
+                                    from_peer_key.clone(),
                                     ConnectionTurnStatus {
                                         connected: false,
                                         turn_connection: true,
@@ -355,9 +399,8 @@ impl ConnectionManager {
                                 );
                             }
 
-                            LOGGER.debug(&format!("From UUID: {}", from_uuid.clone()));
-                            if let Some(status) =
-                                self.connections_turn.write().await.get_mut(&from_uuid)
+                            LOGGER.debug(&format!("From peer_key: {}", from_peer_key.clone()));
+                            if let Some(mut status) = self.connections_turn.get_mut(&from_peer_key)
                             {
                                 if status.turn_connection && !status.connected {
                                     let result_turn_tunnel =
@@ -376,10 +419,14 @@ impl ConnectionManager {
 
                                                 let packet_hello = TransportPacket {
                                                     act: "test_turn".to_string(),
-                                                    to: Some(from_uuid.clone()),
+                                                    to: Some(from_peer_key.clone()),
                                                     data: None,
                                                     protocol: Protocol::TURN,
-                                                    uuid: self.db.get_or_create_peer_id().unwrap(),
+                                                    peer_key: self
+                                                        .db
+                                                        .get_or_create_peer_id()
+                                                        .unwrap(),
+                                                    uuid: generate_uuid(),
                                                     nodes: vec![],
                                                 };
                                                 LOGGER.debug("Sending accept connection");
@@ -399,47 +446,48 @@ impl ConnectionManager {
                                 } else {
                                     let packet_file_clone = packet_clone.clone();
                                     match packet_clone.act.as_str() {
-                                        "save_file" => {
-                                            if let Some(TransportData::PeerUploadFile(data)) =
-                                                packet_file_clone.data
-                                            {
-                                                if let Err(e) = self
-                                                    .handle_file_upload(
-                                                        &self.db,
-                                                        data,
-                                                        &connection,
-                                                        from_uuid.clone(),
-                                                    )
-                                                    .await
-                                                {
-                                                    let formatted_error = format!(
-                                                        "Failed to handle file upload: {}",
-                                                        e
-                                                    );
-                                                    LOGGER.error(&formatted_error);
+                                        // "save_file" => {
+                                        //     if let Some(TransportData::PeerUploadFile(data)) =
+                                        //         packet_file_clone.data
+                                        //     {
+                                        //         if let Err(e) = self
+                                        //             .handle_file_upload(
+                                        //                 &self.db,
+                                        //                 data,
+                                        //                 &connection,
+                                        //                 from_peer_key.clone(),
+                                        //             )
+                                        //             .await
+                                        //         {
+                                        //             let formatted_error = format!(
+                                        //                 "Failed to handle file upload: {}",
+                                        //                 e
+                                        //             );
+                                        //             LOGGER.error(&formatted_error);
 
-                                                    let packet_error = TransportPacket {
-                                                        act: "message".to_string(),
-                                                        to: Some(from_uuid.clone()),
-                                                        data: Some(TransportData::Message(
-                                                            Message {
-                                                                text: formatted_error,
-                                                                nonce: None,
-                                                            },
-                                                        )),
-                                                        protocol: Protocol::TURN,
-                                                        uuid: self
-                                                            .db
-                                                            .get_or_create_peer_id()
-                                                            .unwrap(),
-                                                        nodes: vec![],
-                                                    };
+                                        //             let packet_error = TransportPacket {
+                                        //                 act: "message".to_string(),
+                                        //                 to: Some(from_peer_key.clone()),
+                                        //                 data: Some(TransportData::Message(
+                                        //                     Message {
+                                        //                         text: formatted_error,
+                                        //                         nonce: None,
+                                        //                     },
+                                        //                 )),
+                                        //                 protocol: Protocol::TURN,
+                                        //                 peer_key: self
+                                        //                     .db
+                                        //                     .get_or_create_peer_id()
+                                        //                     .unwrap(),
+                                        //                 uuid: generate_uuid(),
+                                        //                 nodes: vec![],
+                                        //             };
 
-                                                    let _ =
-                                                        connection.send_packet(packet_error).await;
-                                                }
-                                            }
-                                        }
+                                        //             let _ =
+                                        //                 connection.send_packet(packet_error).await;
+                                        //         }
+                                        //     }
+                                        // }
                                         "file_saved" => {
                                             if let Some(TransportData::PeerFileSaved(data)) =
                                                 packet_file_clone.data
@@ -468,7 +516,7 @@ impl ConnectionManager {
                                                     .handle_message(
                                                         data,
                                                         &connection,
-                                                        from_uuid.clone(),
+                                                        from_peer_key.clone(),
                                                     )
                                                     .await
                                                 {

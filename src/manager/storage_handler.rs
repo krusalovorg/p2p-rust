@@ -1,8 +1,8 @@
 use super::ConnectionManager::ConnectionManager;
 use crate::connection::Connection;
+use crate::crypto::crypto::generate_uuid;
 use crate::packets::{
-    StorageReservationRequest, StorageReservationResponse, StorageToken, StorageValidTokenResponse,
-    TransportData, TransportPacket, Protocol,
+    FragmentMetadata, FragmentMetadataSync, Protocol, StorageReservationRequest, StorageReservationResponse, StorageToken, StorageValidTokenResponse, TransportData, TransportPacket
 };
 use base64;
 use hex;
@@ -62,7 +62,8 @@ impl ConnectionManager {
                 },
             )),
             protocol: Protocol::SIGNAL,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -95,10 +96,58 @@ impl ConnectionManager {
                 },
             )),
             protocol: Protocol::SIGNAL,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
         connection.send_packet(response).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn handle_fragments_request(
+        &self,
+        packet_request: TransportPacket,
+        connection: &Connection,
+    ) -> Result<(), String> {
+        let mut fragments = self.db.get_my_fragments()
+            .map_err(|e| format!("Ошибка при получении фрагментов: {}", e))?;
+        let storage_fragments = self.db.get_storage_fragments()
+            .map_err(|e| format!("Ошибка при получении фрагментов: {}", e))?;
+        
+        fragments.extend(storage_fragments);
+
+        let metadata_fragments: Vec<FragmentMetadata> = fragments
+            .into_iter()
+            .map(|f| FragmentMetadata {
+                file_hash: f.file_hash,
+                mime: f.mime,
+                public: f.public,
+                encrypted: f.encrypted,
+                compressed: f.compressed,
+                auto_decompress: f.auto_decompress,
+                owner_key: f.owner_key,
+                storage_peer_key: f.storage_peer_key,
+                size: f.size,
+            })
+            .collect();
+
+        let sync_data = FragmentMetadataSync {
+            fragments: metadata_fragments,
+            peer_id: self.db.get_or_create_peer_id().unwrap(),
+        };
+
+        let packet = TransportPacket {
+            act: "sync_fragments".to_string(),
+            to: Some(packet_request.peer_key.clone()),
+            data: Some(TransportData::FragmentMetadataSync(sync_data)),
+            protocol: Protocol::SIGNAL,
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
+            nodes: vec![],
+        };
+
+        let to_peer = packet.to.clone().unwrap();
+        println!("[Peer] Send fragments to {}", to_peer);
+        connection.send_packet(packet).await.map_err(|e| e.to_string())
     }
 } 

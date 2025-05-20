@@ -1,3 +1,5 @@
+use crate::config::Config;
+use crate::crypto::crypto::generate_uuid;
 use crate::db::P2PDatabase;
 use crate::packets::{PeerInfo, Protocol, TransportData, TransportPacket};
 use anyhow::Result;
@@ -119,16 +121,25 @@ impl SignalClient {
                     }
                 });
 
-                // Отправляем начальный пакет
+                let fragments = self.db.get_storage_fragments().unwrap();
+                let mut stored_files = Vec::new();
+                for fragment in fragments {
+                    stored_files.push(fragment.file_hash.clone());
+                }
+
                 let connect_packet = TransportPacket {
                     act: "info".to_string(),
                     to: None,
                     data: Some(TransportData::PeerInfo(PeerInfo {
-                        peer_id: self.db.get_or_create_peer_id().unwrap(),
+                        public_key: self.db.get_or_create_peer_id().unwrap(),
+                        total_space: self.db.get_total_space().unwrap_or(0),
+                        free_space: self.db.get_storage_free_space().await.unwrap_or(0),
+                        stored_files: stored_files,
                         is_signal_server: true,
                     })),
                     protocol: Protocol::SIGNAL,
-                    uuid: self.db.get_or_create_peer_id().unwrap(),
+                    peer_key: self.db.get_or_create_peer_id().unwrap(),
+                    uuid: generate_uuid(),
                     nodes: vec![],
                 };
 

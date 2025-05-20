@@ -1,17 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Fragment {
-    pub uuid_peer: String,
-    pub token: String,
-    pub filename: String,
-    pub hash_file: String,
-    pub encrypted: bool,
-    pub compressed: bool,
-    pub public: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Storage {
     pub file_hash: String, // sha256
     pub filename: String,
@@ -26,6 +15,8 @@ pub struct Storage {
     pub token: String, // base64 token
     pub token_hash: Option<String>, // hash of the token
     pub size: u64,
+    pub groups: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -50,4 +41,13 @@ pub struct ValidatorStorageInfo {
     pub total_space: u64,
     pub last_update: u64,
     pub is_online: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PeerStats {
+    pub public_key: String,
+    pub total_space: u64,
+    pub free_space: u64,
+    pub stored_files: Vec<String>, // хэши файлов
+    pub last_update: u64,
 } 

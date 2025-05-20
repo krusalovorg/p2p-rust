@@ -1,4 +1,5 @@
 use crate::connection::Connection;
+use crate::crypto::crypto::generate_uuid;
 use crate::packets::{PeerWaitConnection, Protocol, TransportData, TransportPacket};
 use crate::tunnel::Tunnel;
 use anyhow::Result;
@@ -28,7 +29,7 @@ impl ConnectionManager {
 
         println!("[DEBUG] Created net_info: {:?}", net_info);
 
-        self.connections_stun.lock().await.insert(
+        self.connections_stun.insert(
             target_uuid.clone(),
             PeerOpenNetInfo {
                 ip: net_info.public_ip.clone(),
@@ -46,7 +47,8 @@ impl ConnectionManager {
             to: Some(target_uuid.clone()),
             data: Some(TransportData::PeerWaitConnection(net_info)),
             protocol: Protocol::STUN,
-            uuid: my_key.clone(),
+            peer_key: my_key.clone(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -72,8 +74,8 @@ impl ConnectionManager {
             let port = data.public_port;
             println!("[DEBUG] Target IP: {}, Port: {}", ip, port);
 
-            let tunnel_opt = self.get_tunnel(packet.uuid.clone()).await;
-            println!("[DEBUG] Got tunnel for UUID {}: {:?}", packet.uuid, tunnel_opt.is_some());
+            let tunnel_opt = self.get_tunnel(packet.peer_key.clone()).await;
+            println!("[DEBUG] Got tunnel for peer_key {}: {:?}", packet.peer_key, tunnel_opt.is_some());
 
             if let Some(tunnel_arc) = tunnel_opt {
                 println!("[DEBUG] Attempting connection to {}:{}", ip, port);
@@ -93,7 +95,7 @@ impl ConnectionManager {
                     }
                 }
             } else {
-                println!("[DEBUG] No tunnel found for UUID: {}", packet.uuid);
+                println!("[DEBUG] No tunnel found for peer_key: {}", packet.peer_key);
                 Err("[STUN] error get tunnel".to_string())
             }
         } else {

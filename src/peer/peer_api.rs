@@ -1,4 +1,5 @@
 use crate::connection::Connection;
+use crate::crypto::crypto::generate_uuid;
 use crate::crypto::token::get_metadata_from_token;
 use crate::db::P2PDatabase;
 use crate::manager::ConnectionManager::ConnectionManager;
@@ -14,7 +15,6 @@ use std::sync::Arc;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::io;
 use std::io::Write;
 use std::path::Path;
 
@@ -48,7 +48,7 @@ impl std::error::Error for UploadError {}
 #[derive(Clone)]
 pub struct PeerAPI {
     connection: Arc<Connection>,
-    db: Arc<P2PDatabase>,
+    pub db: Arc<P2PDatabase>,
     manager: Arc<ConnectionManager>,
 }
 
@@ -85,7 +85,8 @@ impl PeerAPI {
                 file_hash: file.file_hash.clone(),
             })),
             protocol: Protocol::TURN,
-            uuid: my_peer_id,
+            peer_key: my_peer_id,
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -128,13 +129,12 @@ impl PeerAPI {
             .map_err(|e| UploadError::DatabaseError(e.to_string()))?
             .ok_or(UploadError::NoTokensAvailable)?;
 
-        // Проверяем занятое место в токене
         let used_space = self
             .db
             .get_token_used_space(&owner_peer_id)
             .map_err(|e| UploadError::DatabaseError(e.to_string()))?;
 
-        if used_space + file_size > token_info.free_space {
+        if used_space + file_size > token_info.free_space && !public {
             return Err(UploadError::InsufficientSpace {
                 required: file_size,
                 available: token_info.free_space - used_space,
@@ -236,7 +236,8 @@ impl PeerAPI {
                 auto_decompress,
             })),
             protocol: Protocol::TURN,
-            uuid: my_peer_id,
+            peer_key: my_peer_id,
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -245,7 +246,6 @@ impl PeerAPI {
             .await
             .map_err(|e| UploadError::IoError(e.to_string()))?;
 
-        // Обновляем использованное место в токене
         self.db
             .update_token_used_space(&owner_peer_id, used_space + file_size)
             .map_err(|e| UploadError::DatabaseError(e.to_string()))?;
@@ -266,7 +266,8 @@ impl PeerAPI {
                 nonce: None,
             })),
             protocol: Protocol::TURN,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -287,7 +288,8 @@ impl PeerAPI {
                 public_ip: tunnel_ip,
             })),
             protocol: Protocol::STUN,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -300,7 +302,8 @@ impl PeerAPI {
             to: None,
             data: None,
             protocol: Protocol::SIGNAL,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
         println!("{}", format!("[Peer] Sending peer list to signal server"));
@@ -318,7 +321,8 @@ impl PeerAPI {
                 },
             )),
             protocol: Protocol::SIGNAL,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -339,7 +343,8 @@ impl PeerAPI {
                     },
                 )),
                 protocol: Protocol::SIGNAL,
-                uuid: self.db.get_or_create_peer_id().unwrap(),
+                peer_key: self.db.get_or_create_peer_id().unwrap(),
+                uuid: generate_uuid(),
                 nodes: vec![],
             };
 
@@ -364,7 +369,8 @@ impl PeerAPI {
                 }],
             })),
             protocol: Protocol::SIGNAL,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -397,7 +403,8 @@ impl PeerAPI {
                 peer_id: my_peer_id.clone(),
             })),
             protocol: Protocol::TURN,
-            uuid: my_peer_id,
+            peer_key: my_peer_id,
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -425,7 +432,8 @@ impl PeerAPI {
                 peer_id: my_peer_id.clone(),
             })),
             protocol: Protocol::TURN,
-            uuid: my_peer_id,
+            peer_key: my_peer_id,
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -467,7 +475,8 @@ impl PeerAPI {
                 peer_id: my_peer_id.clone(),
             })),
             protocol: Protocol::TURN,
-            uuid: my_peer_id,
+            peer_key: my_peer_id,
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -476,161 +485,6 @@ impl PeerAPI {
         self.db
             .update_fragment_path(&file_hash, &new_path)
             .map_err(|e| format!("Ошибка при обновлении метаданных: {}", e))?;
-
-        Ok(())
-    }
-
-    pub async fn virtual_storage(&self) -> Result<(), String> {
-        let files = self
-            .db
-            .get_my_fragments()
-            .map_err(|e| format!("Ошибка при получении списка файлов: {}", e))?;
-
-        // Создаем структуру для хранения файлов по путям
-        let mut file_tree: std::collections::HashMap<String, Vec<(String, String)>> =
-            std::collections::HashMap::new();
-
-        for file in files {
-            let path = std::path::Path::new(&file.filename);
-            let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("/");
-
-            file_tree
-                .entry(parent.to_string())
-                .or_insert_with(Vec::new)
-                .push((
-                    path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&file.filename)
-                        .to_string(),
-                    file.file_hash,
-                ));
-        }
-
-        // Выводим дерево файлов
-        println!(
-            "\n{}",
-            "╔════════════════════════════════════════════════════════════╗".cyan()
-        );
-        println!(
-            "{}",
-            "║                    ВИРТУАЛЬНОЕ ХРАНИЛИЩЕ                   ║".cyan()
-        );
-        println!(
-            "{}",
-            "╠════════════════════════════════════════════════════════════╣".cyan()
-        );
-
-        for (path, files) in file_tree.iter() {
-            println!("{}", format!("║ 📁 {}", path).cyan());
-            for (filename, hash) in files {
-                println!("{}", format!("║   └─ {} ({})", filename, hash).white());
-            }
-        }
-
-        println!(
-            "{}",
-            "╚════════════════════════════════════════════════════════════╝".cyan()
-        );
-        println!("\n{}", "Доступные команды:".yellow());
-        println!(
-            "{}",
-            "  • move <hash> <new_path> - переместить файл".white()
-        );
-        println!("{}", "  • delete <hash> - удалить файл".white());
-        println!("{}", "  • public <hash> - сделать файл публичным".white());
-        println!("{}", "  • private <hash> - сделать файл приватным".white());
-        println!("{}", "  • exit - выйти из виртуального хранилища".white());
-
-        Ok(())
-    }
-
-    pub async fn virtual_storage_interactive(&self) -> Result<(), String> {
-        use std::io::{self, Write};
-
-        loop {
-            // Показываем текущее состояние хранилища
-            self.virtual_storage().await?;
-
-            print!("\n{}", "virtual_storage> ".green());
-            io::stdout().flush().map_err(|e| e.to_string())?;
-
-            let mut input = String::new();
-            io::stdin()
-                .read_line(&mut input)
-                .map_err(|e| e.to_string())?;
-            let input = input.trim();
-
-            if input == "exit" {
-                break;
-            }
-
-            let parts: Vec<&str> = input.split_whitespace().collect();
-            if parts.is_empty() {
-                continue;
-            }
-
-            match parts[0] {
-                "move" => {
-                    if parts.len() != 3 {
-                        println!("{}", "Использование: move <hash> <new_path>".red());
-                        continue;
-                    }
-                    if let Err(e) = self
-                        .move_file(parts[1].to_string(), parts[2].to_string())
-                        .await
-                    {
-                        println!("{}", format!("Ошибка при перемещении файла: {}", e).red());
-                    } else {
-                        println!("{}", "Файл успешно перемещен".green());
-                    }
-                }
-                "delete" => {
-                    if parts.len() != 2 {
-                        println!("{}", "Использование: delete <hash>".red());
-                        continue;
-                    }
-                    if let Err(e) = self.delete_file(parts[1].to_string()).await {
-                        println!("{}", format!("Ошибка при удалении файла: {}", e).red());
-                    } else {
-                        println!("{}", "Файл успешно удален".green());
-                    }
-                }
-                "public" => {
-                    if parts.len() != 2 {
-                        println!("{}", "Использование: public <hash>".red());
-                        continue;
-                    }
-                    if let Err(e) = self
-                        .change_file_public_access(parts[1].to_string(), true)
-                        .await
-                    {
-                        println!("{}", format!("Ошибка при изменении доступа: {}", e).red());
-                    } else {
-                        println!("{}", "Файл сделан публичным".green());
-                    }
-                }
-                "private" => {
-                    if parts.len() != 2 {
-                        println!("{}", "Использование: private <hash>".red());
-                        continue;
-                    }
-                    if let Err(e) = self
-                        .change_file_public_access(parts[1].to_string(), false)
-                        .await
-                    {
-                        println!("{}", format!("Ошибка при изменении доступа: {}", e).red());
-                    } else {
-                        println!("{}", "Файл сделан приватным".green());
-                    }
-                }
-                _ => {
-                    println!(
-                        "{}",
-                        "Неизвестная команда. Используйте help для списка команд.".red()
-                    );
-                }
-            }
-        }
 
         Ok(())
     }
@@ -709,7 +563,8 @@ impl PeerAPI {
                 token_hash,
             })),
             protocol: Protocol::SIGNAL,
-            uuid: my_peer_id,
+            peer_key: my_peer_id,
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -748,7 +603,8 @@ impl PeerAPI {
             to: None,
             data: Some(TransportData::FragmentMetadataSync(sync_data)),
             protocol: Protocol::SIGNAL,
-            uuid: my_peer_id,
+            peer_key: my_peer_id,
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 

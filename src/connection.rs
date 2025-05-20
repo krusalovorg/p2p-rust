@@ -7,10 +7,11 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task;
 use tokio::time::sleep;
 
+use crate::crypto::crypto::generate_uuid;
 use crate::packets::{Protocol, TransportPacket, TransportData, PeerInfo};
 use crate::db::P2PDatabase;
 
-const SHOW_LOGS: bool = true;
+const SHOW_LOGS: bool = false;
 
 fn log(message: &str) {
     if SHOW_LOGS {
@@ -58,12 +59,16 @@ impl Connection {
             to: None,
             data: Some(
                 TransportData::PeerInfo(PeerInfo {
-                    peer_id: db.get_or_create_peer_id().unwrap(),
                     is_signal_server: false,
+                    total_space: db.get_storage_size().await.unwrap_or(0),
+                    free_space: db.get_storage_free_space().await.unwrap_or(0),
+                    stored_files: Vec::new(),
+                    public_key: db.get_or_create_peer_id().unwrap(),
                 }),
             ),
             protocol: Protocol::SIGNAL,
-            uuid: db.get_or_create_peer_id().unwrap(),
+            peer_key: db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -172,17 +177,26 @@ impl Connection {
         writer: &Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
         db: &P2PDatabase,
     ) -> Result<(), String> {
+        let fragments = db.get_storage_fragments().unwrap_or(Vec::new());
+        let mut stored_files = Vec::new();
+        for fragment in fragments {
+            stored_files.push(fragment.file_hash.clone());
+        }
         let connect_packet = TransportPacket {
             act: "info".to_string(),
             to: None,
             data: Some(
                 TransportData::PeerInfo(PeerInfo {
-                    peer_id: db.get_or_create_peer_id().unwrap(),
                     is_signal_server: false,
+                    total_space: db.get_total_space().unwrap_or(0),
+                    free_space: db.get_storage_free_space().await.unwrap_or(0),
+                    stored_files: stored_files,
+                    public_key: db.get_or_create_peer_id().unwrap(),
                 }),
             ),
             protocol: Protocol::STUN,
-            uuid: db.get_or_create_peer_id().unwrap(),
+            peer_key: db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -226,6 +240,10 @@ impl Connection {
                 Err(format!("Failed to parse JSON: {}", e))
             }
         }
+    }
+
+    pub async fn send_peer_info_request_self(&self) -> Result<(), String> {
+        Self::send_peer_info_request(&self.writer, &self.db).await
     }
 
     pub async fn send_packet(&self, packet: TransportPacket) -> Result<(), String> {

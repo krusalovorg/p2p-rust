@@ -1,7 +1,6 @@
 use super::ConnectionManager::ConnectionManager;
 use crate::{
-    connection::Connection,
-    packets::{Message, Protocol, TransportData, TransportPacket},
+    connection::Connection, crypto::crypto::generate_uuid, packets::{Message, Protocol, TransportData, TransportPacket}
 };
 use colored::*;
 
@@ -22,7 +21,8 @@ impl ConnectionManager {
                 nonce: None,
             })),
             protocol: Protocol::TURN,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 

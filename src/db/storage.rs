@@ -7,7 +7,7 @@ use crate::{
 use async_std::stream::StreamExt;
 use redb::{Error, ReadableTable};
 
-use super::{models::TokenInfo, tables::TOKENS_TABLE, P2PDatabase};
+use super::{models::TokenInfo, tables::{TOKENS_TABLE, PEER_STATS_TABLE}, P2PDatabase};
 
 #[derive(Debug)]
 pub enum StorageError {
@@ -140,6 +140,11 @@ impl P2PDatabase {
         Ok(fragments)
     }
 
+    pub fn get_total_space(&self) -> Result<u64, StorageError> {
+        let config = Config::from_file("config.toml");
+        Ok(config.storage_size)
+    }
+
     pub async fn get_storage_size(&self) -> Result<u64, StorageError> {
         let path = format!("{}/blobs", self.path);
 
@@ -264,5 +269,122 @@ impl P2PDatabase {
         } else {
             Ok(0)
         }
+    }
+
+    pub fn add_file_to_group(&self, group_name: &str, file_hash: &str, tags: Vec<String>) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        let tx = db.begin_write()?;
+
+        {
+            let mut table = tx.open_table(STORAGE_TABLE)?;
+            let fragment_data = if let Some(data) = table.get(file_hash)? {
+                let data = String::from_utf8(data.value().to_vec()).unwrap();
+                let mut fragment: Storage = serde_json::from_str(&data).unwrap();
+                
+                if !fragment.groups.contains(&group_name.to_string()) {
+                    fragment.groups.push(group_name.to_string());
+                }
+                fragment.tags.extend(tags);
+                
+                serde_json::to_string(&fragment).unwrap()
+            } else {
+                return Err(Error::Corrupted("Файл не найден".into()));
+            };
+            table.insert(file_hash, fragment_data.as_bytes())?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_file_from_group(&self, group_name: &str, file_hash: &str) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        let tx = db.begin_write()?;
+
+        {
+            let mut table = tx.open_table(STORAGE_TABLE)?;
+            let fragment_data = if let Some(data) = table.get(file_hash)? {
+                let data = String::from_utf8(data.value().to_vec()).unwrap();
+                let mut fragment: Storage = serde_json::from_str(&data).unwrap();
+                
+                fragment.groups.retain(|g| g != group_name);
+                
+                serde_json::to_string(&fragment).unwrap()
+            } else {
+                return Err(Error::Corrupted("Файл не найден".into()));
+            };
+            table.insert(file_hash, fragment_data.as_bytes())?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_files_by_group(&self, group_name: &str) -> Result<Vec<Storage>, Error> {
+        let db = self.db.lock().unwrap();
+        let tx = db.begin_read()?;
+        let table = tx.open_table(STORAGE_TABLE)?;
+        let mut fragments = Vec::new();
+
+        for item in table.iter()? {
+            let (_, value) = item?;
+            let data = String::from_utf8(value.value().to_vec()).unwrap();
+            let fragment: Storage = serde_json::from_str(&data).unwrap();
+            if fragment.groups.contains(&group_name.to_string()) {
+                fragments.push(fragment);
+            }
+        }
+
+        Ok(fragments)
+    }
+
+    pub fn get_files_by_tag(&self, tag: &str) -> Result<Vec<Storage>, Error> {
+        let db = self.db.lock().unwrap();
+        let tx = db.begin_read()?;
+        let table = tx.open_table(STORAGE_TABLE)?;
+        let mut fragments = Vec::new();
+
+        for item in table.iter()? {
+            let (_, value) = item?;
+            let data = String::from_utf8(value.value().to_vec()).unwrap();
+            let fragment: Storage = serde_json::from_str(&data).unwrap();
+            if fragment.tags.contains(&tag.to_string()) {
+                fragments.push(fragment);
+            }
+        }
+
+        Ok(fragments)
+    }
+
+    pub fn get_all_groups(&self) -> Result<Vec<String>, Error> {
+        let db = self.db.lock().unwrap();
+        let tx = db.begin_read()?;
+        let table = tx.open_table(STORAGE_TABLE)?;
+        let mut groups = std::collections::HashSet::new();
+
+        for item in table.iter()? {
+            let (_, value) = item?;
+            let data = String::from_utf8(value.value().to_vec()).unwrap();
+            let fragment: Storage = serde_json::from_str(&data).unwrap();
+            groups.extend(fragment.groups);
+        }
+
+        Ok(groups.into_iter().collect())
+    }
+
+    pub fn get_all_tags(&self) -> Result<Vec<String>, Error> {
+        let db = self.db.lock().unwrap();
+        let tx = db.begin_read()?;
+        let table = tx.open_table(STORAGE_TABLE)?;
+        let mut tags = std::collections::HashSet::new();
+
+        for item in table.iter()? {
+            let (_, value) = item?;
+            let data = String::from_utf8(value.value().to_vec()).unwrap();
+            let fragment: Storage = serde_json::from_str(&data).unwrap();
+            tags.extend(fragment.tags);
+        }
+
+        Ok(tags.into_iter().collect())
     }
 }

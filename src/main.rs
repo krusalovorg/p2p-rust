@@ -21,7 +21,7 @@ mod commands;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;
-use crate::ui::{print_all_files, print_welcome};
+use crate::ui::{print_all_files, print_welcome, print_all_fragments};
 use crate::contract::runtime::hardcoded_test_contract;
 use crate::commands::create_base_commands;
 
@@ -43,6 +43,7 @@ async fn main() {
     print_all_files(&db);
 
     if matches.get_flag("signal") {
+        print_all_fragments(&db);
         let signal_server = SignalServer::new(&config, &db).await;
         signal_server.run().await;
     } else {

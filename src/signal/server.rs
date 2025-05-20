@@ -1,17 +1,25 @@
 use async_std::sync::Mutex;
+use dashmap::DashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
+use tokio::sync::oneshot;
 use tokio::sync::{mpsc, RwLock};
 
 use super::peer_search::PeerSearchManager;
 use super::Peer;
+use crate::commands::create_base_commands;
+use crate::commands::get_path_blobs;
 use crate::config::Config;
-use crate::db::P2PDatabase;
+use crate::crypto::crypto::generate_uuid;
+use crate::db::{P2PDatabase, Storage};
+use crate::http::http_api::HttpApi;
 use crate::http::http_proxy::HttpProxy;
 use crate::packets::{
-    PeerWaitConnection, Protocol, SearchPathNode, SyncPeerInfo, SyncPeerInfoData, TransportData,
-    TransportPacket,
+    FragmentSearchResponse, PeerWaitConnection, Protocol, SearchPathNode, SyncPeerInfo,
+    SyncPeerInfoData, TransportData, TransportPacket,
 };
 use crate::signal::client::SignalClient;
 use crate::signal::signal_servers::{
@@ -36,12 +44,14 @@ pub struct SignalServer {
     ip: String,
     message_tx: mpsc::Sender<(Arc<Peer>, String)>,
     pub response_tx: mpsc::Sender<TransportPacket>,
-    pub response_rx: Arc<Mutex<mpsc::Receiver<TransportPacket>>>,
     pub proxy_http_tx: mpsc::Sender<TransportPacket>,
+    pub api_http_tx: mpsc::Sender<TransportPacket>,
     my_public_addr: Arc<String>,
     my_public_key: Arc<String>,
     pub db: Arc<P2PDatabase>,
     pub http_proxy: Arc<HttpProxy>,
+    pub http_api: Arc<HttpApi>,
+    pending_responses: Arc<DashMap<String, oneshot::Sender<TransportPacket>>>,
 }
 
 impl SignalServer {
@@ -49,11 +59,15 @@ impl SignalServer {
         let (message_tx, mut message_rx) = mpsc::channel(1000);
         let (response_tx, mut response_rx) = mpsc::channel(1000);
         let (proxy_http_tx, mut proxy_http_rx) = mpsc::channel(1000);
+        let (api_http_tx, mut api_http_rx) = mpsc::channel(1000);
 
         let tunnel = Tunnel::new().await;
         let public_ip = tunnel.get_public_ip();
         let my_public_addr = Arc::new(format!("{}:{}", public_ip, config.signal_server_port));
         let my_public_key = db.get_or_create_peer_id().unwrap();
+
+        let commands = create_base_commands();
+        let path_blobs = get_path_blobs(&commands.get_matches());
 
         let peers = Arc::new(RwLock::new(Vec::new()));
         let connected_servers = Arc::new(RwLock::new(Vec::new()));
@@ -66,12 +80,29 @@ impl SignalServer {
         );
 
         let proxy_http_tx_clone = proxy_http_tx.clone();
+        let api_http_tx_clone = api_http_tx.clone();
         let proxy = Arc::new(HttpProxy::new(
             Arc::new(db.clone()),
-            proxy_http_tx_clone
+            proxy_http_tx_clone,
+            path_blobs.clone(),
         ));
-
         let proxy_clone = Arc::clone(&proxy);
+        let proxy_http_clone = Arc::clone(&proxy);
+
+        let pending_responses = Arc::new(DashMap::new());
+
+        let http_api = Arc::new(
+            HttpApi::new(
+                Arc::new(db.clone()),
+                public_ip.clone(),
+                api_http_tx_clone,
+                path_blobs.clone(),
+            )
+            .await,
+        );
+        let http_api_clone = Arc::clone(&http_api);
+        let http_api_clone2 = Arc::clone(&http_api);
+
         let server = SignalServer {
             peers,
             connected_servers,
@@ -79,20 +110,35 @@ impl SignalServer {
             port: config.signal_server_port,
             message_tx,
             response_tx,
-            response_rx: Arc::new(Mutex::new(response_rx)),
             proxy_http_tx,
+            api_http_tx,
             ip: public_ip,
             my_public_addr,
             my_public_key: Arc::new(my_public_key),
             db: Arc::new(db.clone()),
             http_proxy: proxy,
+            http_api,
+            pending_responses,
         };
 
         tokio::spawn(async move {
             proxy_clone.start().await;
         });
-        
+
+        tokio::spawn(async move {
+            http_api_clone.start().await;
+        });
+
         let server_arc = Arc::new(server);
+
+        let server_clone = Arc::clone(&server_arc);
+        tokio::spawn(async move {
+            loop {
+                server_clone.sync_fragments_with_peers().await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+            }
+        });
+
         if let Ok(mut servers_list) = SignalServersList::load_or_create() {
             for server_info in servers_list.servers.iter() {
                 if (server_info.public_ip == "127.0.0.1"
@@ -134,36 +180,75 @@ impl SignalServer {
         });
 
         tokio::spawn(async move {
-            let mut rx = server_clone_for_proxy_http.response_rx.lock().await;
-            while let Some(response) = rx.recv().await {
-                let server_clone = server_clone_for_proxy_http.clone();
+            while let Some(packet) = proxy_http_rx.recv().await {
+                let server_clone = server_clone_for_proxy.clone();
                 tokio::spawn(async move {
-                    if let Some(TransportData::ProxyMessage(msg)) = response.data {
-                        log(&format!(
-                            "Received response from proxy: {:?}",
-                            msg.from_peer_id
-                        ));
-                        let encrypted_response = base64::decode(&msg.text).unwrap();
-                        let nonce = base64::decode(&msg.nonce).unwrap();
-                        let nonce_array: [u8; 12] = nonce.try_into().unwrap();
-                        let response_bytes = server_clone
-                            .db
-                            .decrypt_message(&encrypted_response, nonce_array, &msg.from_peer_id)
-                            .unwrap();
-
-                        server_clone.http_proxy
-                            .set_response(msg.request_id.clone(), response_bytes)
-                            .await;
-                    }
+                    server_clone.auto_send_packet(packet).await;
                 });
             }
         });
 
         tokio::spawn(async move {
-            while let Some(packet) = proxy_http_rx.recv().await {
-                let server_clone = server_clone_for_proxy.clone();
+            while let Some(packet) = api_http_rx.recv().await {
+                let server_clone = server_clone_for_proxy_http.clone();
                 tokio::spawn(async move {
-                    server_clone.auto_send_packet(packet).await;
+                    if packet.to.is_some() {
+                        server_clone.auto_send_packet(packet).await;
+                    } else {
+                        let target_peer = server_clone.db.get_peer_with_most_space();
+                        let mut packet_clone = packet.clone();
+                        packet_clone.to = target_peer;
+                        server_clone.auto_send_packet(packet_clone).await;
+                    }
+                });
+            }
+        });
+
+        let proxy_clone_rx = proxy_http_clone.clone();
+        tokio::spawn(async move {
+            while let Some(packet) = response_rx.recv().await {
+                println!(
+                    "[HTTP Proxy] Getted request from http proxy: {:?}",
+                    packet.to
+                );
+                let proxy = proxy_clone_rx.clone();
+                let http_api = http_api_clone2.clone();
+                tokio::spawn(async move {
+                    let packet_clone = packet.clone();
+                    match &packet_clone.data {
+                        Some(TransportData::ProxyMessage(msg)) => {
+                            println!(
+                                "[HTTP Proxy] Getted request from http proxy: {:?}",
+                                msg.from_peer_id
+                            );
+                            http_api
+                                .set_response(msg.request_id.clone(), packet_clone.clone())
+                                .await;
+                            proxy
+                                .set_response(msg.request_id.clone(), packet_clone)
+                                .await;
+                        }
+                        Some(TransportData::FragmentSearchResponse(_)) => {
+                            println!(
+                                "[HTTP Proxy] Getted request from http proxy: {:?}",
+                                packet_clone.peer_key.clone()
+                            );
+                            http_api
+                                .set_response(packet_clone.uuid.clone(), packet_clone.clone())
+                                .await;
+                            proxy
+                                .set_response(packet_clone.uuid.clone(), packet_clone)
+                                .await;
+                        }
+                        _ => {
+                            http_api
+                                .set_response(packet_clone.uuid.clone(), packet_clone.clone())
+                                .await;
+                            proxy
+                                .set_response(packet_clone.uuid.clone(), packet_clone)
+                                .await;
+                        }
+                    }
                 });
             }
         });
@@ -344,7 +429,7 @@ impl SignalServer {
             for p in peers_guard.iter() {
                 let uuid = p
                     .info
-                    .uuid
+                    .peer_key
                     .read()
                     .await
                     .clone()
@@ -356,7 +441,7 @@ impl SignalServer {
 
         let peer_uuid = peer
             .info
-            .uuid
+            .peer_key
             .read()
             .await
             .clone()
@@ -370,7 +455,8 @@ impl SignalServer {
                 peers: peers_info,
             })),
             protocol: Protocol::SIGNAL,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -405,6 +491,10 @@ impl SignalServer {
             }
         };
 
+        if let Some((_uuid, sender)) = self.pending_responses.remove(&message.uuid) {
+            let _ = sender.send(message.clone());
+        }
+
         if message.act == "http_proxy_response" {
             if let Some(target_peer_id) = &message.to {
                 if *target_peer_id != *self.my_public_key {
@@ -418,23 +508,37 @@ impl SignalServer {
             return;
         }
 
-        let peer_uuid = &message.uuid;
+        let peer_key = &message.peer_key;
         let is_peer_wait_connection = message.act == "wait_connection";
         let is_peer_accept_connection = message.act == "accept_connection";
 
         peer.set_wait_connection(is_peer_wait_connection || is_peer_accept_connection)
             .await;
-        peer.set_uuid(peer_uuid.clone()).await;
+        peer.set_peer_key(peer_key.clone()).await;
+
+        if message.act == "info" {
+            let packet_request_sync_fragments = TransportPacket {
+                act: "request_fragments".to_string(),
+                to: Some(peer_key.clone()),
+                data: None,
+                protocol: Protocol::SIGNAL,
+                peer_key: self.db.get_or_create_peer_id().unwrap(),
+                uuid: generate_uuid(),
+                nodes: vec![],
+            };
+            self.auto_send_packet(packet_request_sync_fragments).await;
+        } else if message.act == "file" {
+            self.response_tx.send(message.clone()).await;
+        }
 
         if let Some(data) = &message.data {
             match data {
                 TransportData::SignalServerInfo(server_info) => {
                     log(&format!(
                         "[SignalServer] Received signal server info from peer {}: {:?}",
-                        peer_uuid, server_info
+                        peer_key, server_info
                     ));
 
-                    // Сохраняем информацию о сигнальном сервере
                     let stored_info = StoredSignalServerInfo {
                         public_key: server_info.public_key.clone(),
                         public_ip: server_info.public_ip.clone(),
@@ -448,7 +552,6 @@ impl SignalServer {
                                 e
                             ));
                         } else {
-                            // Инициализируем соединение с новым сигнальным сервером
                             let server_addr =
                                 format!("{}:{}", stored_info.public_ip, stored_info.port);
                             let server_clone = Arc::clone(server);
@@ -501,9 +604,9 @@ impl SignalServer {
                 TransportData::PeerInfo(info) => {
                     log(&format!(
                         "[SignalServer] Setting peer UUID: {}",
-                        info.peer_id
+                        info.public_key
                     ));
-                    peer.set_uuid(info.peer_id.clone()).await;
+                    peer.set_peer_key(info.public_key.clone()).await;
                 }
                 TransportData::PeerWaitConnection(data) => {
                     peer.add_open_tunnel(
@@ -529,7 +632,8 @@ impl SignalServer {
                                     request.clone(),
                                 )),
                                 protocol: Protocol::SIGNAL,
-                                uuid: self.db.get_or_create_peer_id().unwrap(),
+                                peer_key: self.db.get_or_create_peer_id().unwrap(),
+                                uuid: generate_uuid(),
                                 nodes: vec![SearchPathNode {
                                     uuid: self.db.get_or_create_peer_id().unwrap(),
                                     public_ip: self.ip.clone(),
@@ -548,7 +652,8 @@ impl SignalServer {
                         to: Some(response.peer_id.clone()),
                         data: Some(TransportData::StorageReservationResponse(response.clone())),
                         protocol: Protocol::SIGNAL,
-                        uuid: self.db.get_or_create_peer_id().unwrap(),
+                        peer_key: self.db.get_or_create_peer_id().unwrap(),
+                        uuid: generate_uuid(),
                         nodes: vec![],
                     };
                     self.auto_send_packet(packet).await;
@@ -558,12 +663,12 @@ impl SignalServer {
                         "[SignalServer] Получены метаданные фрагментов от пира {}",
                         data.peer_id
                     ));
-                    
+
                     for fragment in data.fragments.clone() {
-                        let storage = crate::db::Storage {
+                        let storage = Storage {
                             file_hash: fragment.file_hash,
-                            filename: String::new(), 
-                            token: String::new(), 
+                            filename: String::new(),
+                            token: String::new(),
                             token_hash: None,
                             uploaded_via_token: None,
                             owner_key: fragment.owner_key,
@@ -574,6 +679,8 @@ impl SignalServer {
                             compressed: fragment.compressed,
                             auto_decompress: fragment.auto_decompress,
                             size: fragment.size,
+                            tags: vec![],
+                            groups: vec![],
                         };
 
                         if let Err(e) = self.db.add_storage_fragment(storage) {
@@ -591,10 +698,48 @@ impl SignalServer {
                         to: None,
                         data: Some(TransportData::FragmentMetadataSync(data.clone())),
                         protocol: Protocol::SIGNAL,
-                        uuid: self.db.get_or_create_peer_id().unwrap(),
+                        peer_key: self.db.get_or_create_peer_id().unwrap(),
+                        uuid: generate_uuid(),
                         nodes: vec![],
                     };
                     self.broadcast_to_servers(packet).await;
+                }
+                TransportData::FragmentSearchRequest(request) => {
+                    log(&format!(
+                        "[SignalServer] Get fragment search request: {}",
+                        request.query
+                    ));
+
+                    match self.search_fragments(&request.query).await {
+                        Ok(fragments) => {
+                            println!(
+                                "[SignalServer] [DEBUG] Found fragments: {:?}",
+                                fragments.len()
+                            );
+                            let response = TransportPacket {
+                                act: "search_fragments_response".to_string(),
+                                to: Some(message.peer_key.clone()),
+                                data: Some(TransportData::FragmentSearchResponse(
+                                    FragmentSearchResponse {
+                                        fragments,
+                                        request_id: request.request_id.clone(),
+                                    },
+                                )),
+                                protocol: Protocol::SIGNAL,
+                                peer_key: self.db.get_or_create_peer_id().unwrap(),
+                                uuid: message.uuid.clone(),
+                                nodes: vec![],
+                            };
+
+                            self.auto_send_packet(response).await;
+                        }
+                        Err(e) => {
+                            log(&format!(
+                                "[SignalServer] Ошибка при поиске фрагментов: {}",
+                                e
+                            ));
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -603,11 +748,20 @@ impl SignalServer {
         if message.act == "info" {
             if let Some(TransportData::PeerInfo(info)) = &message.data {
                 peer.set_is_signal_server(info.is_signal_server).await;
+
+                if let Err(e) = self.db.update_peer_stats(
+                    &info.public_key.clone(),
+                    info.total_space,
+                    info.free_space,
+                    info.stored_files.clone(),
+                ) {
+                    log(&format!("[SignalServer] Failed to sync peer stats: {}", e));
+                }
             }
 
             log("[SignalServer] =================");
             log("[SignalServer] CONNECTED PEER INFO:");
-            log(&format!("[SignalServer] PUBLIC ADDRESS: {}", peer_uuid));
+            log(&format!("[SignalServer] PUBLIC ADDRESS: {}", peer_key));
             log(&format!(
                 "[SignalServer] LOCAL ADDRESS: {}",
                 peer.info.local_addr
@@ -616,7 +770,7 @@ impl SignalServer {
                 "[SignalServer] IS SIGNAL SERVER: {}",
                 peer.is_signal_server().await
             ));
-            if let Some(uuid) = peer.info.uuid.read().await.clone() {
+            if let Some(uuid) = peer.info.peer_key.read().await.clone() {
                 log(&format!("[SignalServer] PEER UUID: {}", uuid));
             } else {
                 log("[SignalServer] PEER UUID: Not set");
@@ -631,7 +785,7 @@ impl SignalServer {
                 if is_peer_wait_connection {
                     log(&format!(
                         "[SignalServer] Peer is ready to connect: {}",
-                        peer_uuid
+                        peer_key
                     ));
                     if let Some(TransportData::PeerWaitConnection(data)) = message.data {
                         log(&format!(
@@ -640,7 +794,7 @@ impl SignalServer {
                         ));
                         let peers_guard = server.peers.read().await;
                         for target_peer in peers_guard.iter() {
-                            if let Some(uuid) = target_peer.info.uuid.read().await.clone() {
+                            if let Some(uuid) = target_peer.info.peer_key.read().await.clone() {
                                 let open_tunnel =
                                     target_peer.get_open_tunnel(&data.connect_peer_id).await;
                                 if uuid == data.connect_peer_id {
@@ -664,7 +818,8 @@ impl SignalServer {
                                                 data.clone(),
                                             )),
                                             protocol: Protocol::STUN,
-                                            uuid: message.uuid.to_string(),
+                                            peer_key: message.peer_key.to_string(),
+                                            uuid: message.peer_key.to_string(),
                                             nodes: vec![],
                                         };
                                         let packet_json = serde_json::to_string(&packet).unwrap();
@@ -684,11 +839,11 @@ impl SignalServer {
                     if let Some(TransportData::PeerWaitConnection(data)) = message.data.clone() {
                         let peers_guard = server.peers.read().await;
                         for target_peer in peers_guard.iter() {
-                            if let Some(uuid) = target_peer.info.uuid.read().await.clone() {
+                            if let Some(uuid) = target_peer.info.peer_key.read().await.clone() {
                                 if uuid == data.connect_peer_id {
                                     let open_tunnel_a = peer.get_open_tunnel(&uuid).await;
                                     let open_tunnel_b =
-                                        target_peer.get_open_tunnel(&peer_uuid).await;
+                                        target_peer.get_open_tunnel(&peer_key).await;
                                     if open_tunnel_a.is_some() && open_tunnel_b.is_some() {
                                         log("[SignalServer] Both peers have open tunnels. Connecting");
                                         server
@@ -707,35 +862,42 @@ impl SignalServer {
                         "[SignalServer] Received turn packet: {:?}",
                         message
                     ));
-                    let peers_guard = server.peers.read().await;
-                    for item in peers_guard.iter() {
-                        if *item.info.uuid.read().await == Some(to.clone()) {
-                            log(&format!(
-                                "[SignalServer] Send turn packet: {} {:?}",
-                                peer.info.local_addr, message
-                            ));
+                    if to.clone() == *self.my_public_key.clone() {
+                        if let Some(TransportData::PeerFileSaved(data)) = &message.data {
+                            self.response_tx.send(message.clone()).await;
+                        }
+                    } else {
+                        let peers_guard = server.peers.read().await;
+                        for item in peers_guard.iter() {
+                            if *item.info.peer_key.read().await == Some(to.clone()) {
+                                log(&format!(
+                                    "[SignalServer] Send turn packet: {} {:?}",
+                                    peer.info.local_addr, message
+                                ));
 
-                            let turn_packet = TransportPacket {
-                                act: message.act.to_string(),
-                                to: message.to.clone(),
-                                data: message.data.clone(),
-                                protocol: Protocol::TURN,
-                                uuid: message.uuid.to_string(),
-                                nodes: vec![],
-                            };
-                            let turn_packet = serde_json::to_string(&turn_packet).unwrap();
-                            if let Err(e) = item.send(turn_packet).await {
-                                log(&format!(
-                                    "[SignalServer] Failed to send turn packet to peer {}: {}",
-                                    item.info.local_addr, e
-                                ));
-                            } else {
-                                log(&format!(
-                                    "[SignalServer] Successfully send turn packet to peer {}",
-                                    item.info.local_addr
-                                ));
+                                let turn_packet = TransportPacket {
+                                    act: message.act.to_string(),
+                                    to: message.to.clone(),
+                                    data: message.data.clone(),
+                                    protocol: Protocol::TURN,
+                                    peer_key: message.peer_key.to_string(),
+                                    uuid: message.peer_key.to_string(),
+                                    nodes: vec![],
+                                };
+                                let turn_packet = serde_json::to_string(&turn_packet).unwrap();
+                                if let Err(e) = item.send(turn_packet).await {
+                                    log(&format!(
+                                        "[SignalServer] Failed to send turn packet to peer {}: {}",
+                                        item.info.local_addr, e
+                                    ));
+                                } else {
+                                    log(&format!(
+                                        "[SignalServer] Successfully send turn packet to peer {}",
+                                        item.info.local_addr
+                                    ));
+                                }
+                                break;
                             }
-                            break;
                         }
                     }
                 }
@@ -754,41 +916,45 @@ impl SignalServer {
                         log("[SignalServer] No peers found in the data for wait_connection.");
                     }
                 } else if message.to.is_some() {
-                    log(&format!(
-                        "[SignalServer] Sending packet to peer: {}",
-                        message.to.clone().unwrap()
-                    ));
-                    self.send_to_peer_by_packet(message.clone()).await;
+                    if message.to != Some((*self.my_public_key).clone()) {
+                        log(&format!(
+                            "[SignalServer] Sending packet to peer: {}",
+                            message.to.clone().unwrap()
+                        ));
+                        self.auto_send_packet(message.clone()).await;
+                    }
                 }
             }
         }
     }
 
     pub async fn auto_send_packet(&self, message: TransportPacket) {
-        let target_peer_id = message.to.clone().unwrap();
-        let from_peer_id = message.uuid.clone();
-        let mut sended = false;
+        if message.to.is_some() {
+            let target_peer_id = message.to.clone().unwrap();
+            let from_peer_id = message.peer_key.clone();
+            let mut sended = false;
 
-        if from_peer_id == *target_peer_id {
-            return;
-        }
-
-        for peer in self.peers.read().await.iter() {
-            if peer.info.uuid.read().await.clone().unwrap() == target_peer_id
-                || peer.is_signal_server().await
-            {
-                peer.send(serde_json::to_string(&message).unwrap()).await;
-                sended = true;
+            if from_peer_id == *target_peer_id {
+                return;
             }
-        }
-        if !sended {
-            for server in self.connected_servers.read().await.iter() {
-                if server.public_key != from_peer_id {
-                    log(&format!(
-                        "[SignalServer] Sending packet to signal server: {:?}. from uuid: {}",
-                        server.public_key, from_peer_id
-                    ));
-                    server.send_packet(message.clone()).await;
+
+            for peer in self.peers.read().await.iter() {
+                if peer.info.peer_key.read().await.clone().unwrap() == target_peer_id
+                    || peer.is_signal_server().await
+                {
+                    peer.send(serde_json::to_string(&message).unwrap()).await;
+                    sended = true;
+                }
+            }
+            if !sended {
+                for server in self.connected_servers.read().await.iter() {
+                    if server.public_key != from_peer_id {
+                        log(&format!(
+                            "[SignalServer] Sending packet to signal server: {:?}. from uuid: {}",
+                            server.public_key, from_peer_id
+                        ));
+                        server.send_packet(message.clone()).await;
+                    }
                 }
             }
         }
@@ -796,7 +962,7 @@ impl SignalServer {
 
     async fn send_to_peer_by_packet(&self, message: TransportPacket) {
         for peer in self.peers.read().await.iter() {
-            if peer.info.uuid.read().await.clone().unwrap() == message.to.clone().unwrap() {
+            if peer.info.peer_key.read().await.clone().unwrap() == message.to.clone().unwrap() {
                 peer.send(serde_json::to_string(&message).unwrap()).await;
             }
         }
@@ -866,7 +1032,7 @@ impl SignalServer {
     }
 
     async fn send_peer_info(to_peer: Arc<Peer>, about_peer: Arc<Peer>) {
-        let pub_id = about_peer.info.uuid.read().await.clone().unwrap();
+        let pub_id = about_peer.info.peer_key.read().await.clone().unwrap();
         if let Some(key_peer) = to_peer.get_key().await {
             let data_open_tunnel = about_peer.get_open_tunnel(&key_peer.to_string()).await;
             if let Some(open_tunnel) = data_open_tunnel {
@@ -879,7 +1045,8 @@ impl SignalServer {
                         public_port: open_tunnel.port,
                     })),
                     protocol: Protocol::STUN,
-                    uuid: about_peer.info.uuid.read().await.clone().unwrap(),
+                    peer_key: about_peer.info.peer_key.read().await.clone().unwrap(),
+                    uuid: generate_uuid(),
                     nodes: vec![],
                 };
                 let wait_packet = serde_json::to_string(&wait_packet).unwrap();
@@ -912,5 +1079,60 @@ impl SignalServer {
                 ));
             }
         }
+    }
+
+    async fn sync_fragments_with_peers(&self) {
+        log("[SignalServer] Начинаем синхронизацию фрагментов с пирами");
+
+        let peers = self.peers.read().await;
+        for peer in peers.iter() {
+            if let Some(peer_id) = peer.get_key().await {
+                let packet = TransportPacket {
+                    act: "request_fragments".to_string(),
+                    to: Some(peer_id.clone()),
+                    data: None,
+                    protocol: Protocol::SIGNAL,
+                    peer_key: self.db.get_or_create_peer_id().unwrap(),
+                    uuid: generate_uuid(),
+                    nodes: vec![],
+                };
+
+                if let Err(e) = peer.send(serde_json::to_string(&packet).unwrap()).await {
+                    log(&format!(
+                        "[SignalServer] Ошибка при запросе фрагментов у пира {}: {}",
+                        peer_id, e
+                    ));
+                } else {
+                    log(&format!(
+                        "[SignalServer] Запрос фрагментов отправлен пиру {}",
+                        peer_id
+                    ));
+                }
+            }
+        }
+    }
+
+    pub async fn wait_for_response(
+        &self,
+        uuid: String,
+        timeout: Duration,
+    ) -> Result<TransportPacket, String> {
+        let (tx, rx) = oneshot::channel();
+        self.pending_responses.insert(uuid.clone(), tx);
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(packet)) => Ok(packet),
+            Ok(Err(_)) => Err("Channel closed before receiving response".to_string()),
+            Err(_) => {
+                self.pending_responses.remove(&uuid);
+                Err("Timeout waiting for response".to_string())
+            }
+        }
+    }
+
+    pub async fn search_fragments(&self, query: &str) -> Result<Vec<Storage>, String> {
+        self.db
+            .search_fragment_in_virtual_storage(query, None)
+            .map_err(|e| e.to_string())
     }
 }

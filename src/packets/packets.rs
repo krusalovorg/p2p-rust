@@ -1,7 +1,12 @@
+use crate::db::Storage;
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PeerInfo {
-    pub peer_id: String,
     pub is_signal_server: bool,
+    pub total_space: u64,
+    pub free_space: u64,
+    pub stored_files: Vec<String>,
+    pub public_key: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -84,6 +89,7 @@ pub struct ProxyMessage {
     pub from_peer_id: String,
     pub end_peer_id: String,
     pub request_id: String,
+    pub mime: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -93,6 +99,7 @@ pub struct FileData {
     pub peer_id: String,
     pub hash_file: String,
     pub encrypted: bool,
+    pub mime: String,
     pub compressed: bool,
     pub public: bool,
     pub auto_decompress: bool,
@@ -183,6 +190,18 @@ pub struct GetFragmentsMetadata {
     pub token_hash: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FragmentSearchRequest {
+    pub query: String,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FragmentSearchResponse {
+    pub fragments: Vec<Storage>,
+    pub request_id: String,
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub enum TransportData {
     Message(Message),
@@ -207,6 +226,8 @@ pub enum TransportData {
     PeerFileMove(PeerFileMove),
     FragmentMetadataSync(FragmentMetadataSync),
     GetFragmentsMetadata(GetFragmentsMetadata),
+    FragmentSearchRequest(FragmentSearchRequest),
+    FragmentSearchResponse(FragmentSearchResponse),
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
@@ -215,6 +236,7 @@ pub struct TransportPacket {
     pub to: Option<String>,  //кому отправляем данный пакет
     pub data: Option<TransportData>,
     pub protocol: Protocol,     // TURN, STUN, SIGNAL
+    pub peer_key: String,
     pub uuid: String,
     pub nodes: Vec<SearchPathNode>, // ноды через которых прошел пакет
 }

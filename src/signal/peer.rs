@@ -1,4 +1,5 @@
 use async_std::sync::Mutex;
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt}; // Добавляем split
@@ -13,7 +14,7 @@ pub struct InfoPeer {
     pub public_addr: Arc<RwLock<String>>,
     pub local_addr: String,
     pub is_signal_server: Arc<RwLock<bool>>,
-    pub uuid: Arc<RwLock<Option<String>>>,
+    pub peer_key: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,7 +30,7 @@ pub struct Peer {
     pub info: InfoPeer,                                  // Peer information (ip:port)
     tx: mpsc::Sender<String>,                            // Добавляем Sender для отправки сообщений
 
-    open_tunnels: Arc<RwLock<HashMap<String, PeerOpenNetInfo>>>,
+    open_tunnels: Arc<DashMap<String, PeerOpenNetInfo>>,
 }
 
 impl Peer {
@@ -41,12 +42,12 @@ impl Peer {
                 wait_connection: Arc::new(RwLock::new(false)),
                 public_addr: Arc::new(RwLock::new("".to_string())),
                 local_addr: socket.peer_addr().unwrap().to_string(),
-                uuid: Arc::new(RwLock::new(None)),
+                peer_key: Arc::new(RwLock::new(None)),
                 is_signal_server: Arc::new(RwLock::new(false)),
             });
         }
 
-        let open_tunnels = Arc::new(RwLock::new(HashMap::<String, PeerOpenNetInfo>::new()));
+        let open_tunnels = Arc::new(DashMap::new());
 
         let (reader, writer) = split(socket);
         let reader = Arc::new(RwLock::new(reader));
@@ -148,17 +149,15 @@ impl Peer {
     }
 
     pub async fn add_open_tunnel(&self, peer_id: &str, ip: String, port: u16) {
-        let mut open_tunnels = self.open_tunnels.write().await;
-        open_tunnels.insert(peer_id.to_string(), PeerOpenNetInfo { ip, port });
+        self.open_tunnels.insert(peer_id.to_string(), PeerOpenNetInfo { ip, port });
     }
 
     pub async fn get_open_tunnel(&self, peer_id: &str) -> Option<PeerOpenNetInfo> {
-        let open_tunnels = self.open_tunnels.read().await;
-        open_tunnels.get(peer_id).cloned()
+        self.open_tunnels.get(peer_id).map(|v| v.clone())
     }
 
     pub async fn get_key(&self) -> Option<String> {
-        return self.info.uuid.read().await.clone();
+        return self.info.peer_key.read().await.clone();
     }
 
     pub async fn set_wait_connection(&self, wait_connection_new: bool) {
@@ -171,9 +170,9 @@ impl Peer {
         *public_addr_now = public_addr;
     }
 
-    pub async fn set_uuid(&self, uuid: String) {
-        let mut current_uuid = self.info.uuid.write().await;
-        *current_uuid = Some(uuid);
+    pub async fn set_peer_key(&self, peer_key: String) {
+        let mut current_peer_key = self.info.peer_key.write().await;
+        *current_peer_key = Some(peer_key);
     }
 
     pub async fn send(&self, packet: String) -> Result<(), String> {

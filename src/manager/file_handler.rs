@@ -1,56 +1,70 @@
 use super::ConnectionManager::ConnectionManager;
 use crate::connection::Connection;
+use crate::crypto::crypto::generate_uuid;
 use crate::crypto::token::validate_signature_token;
 use crate::db::{P2PDatabase, Storage};
 use crate::packets::{
-    EncryptedData, FileData, Message, PeerFileGet, PeerFileSaved, PeerUploadFile, Protocol,
-    TransportData, TransportPacket, PeerFileAccessChange, PeerFileDelete, PeerFileMove,
-    FragmentMetadataSync,
+    EncryptedData, FileData, FragmentMetadataSync, Message, PeerFileAccessChange, PeerFileDelete,
+    PeerFileGet, PeerFileMove, PeerFileSaved, PeerUploadFile, Protocol, TransportData,
+    TransportPacket,
 };
 use base64;
 use colored::*;
+use hex;
 use serde_json;
+use sha2::{Digest, Sha256};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use sha2::{Digest, Sha256};
-use hex;
 
 impl ConnectionManager {
     pub async fn handle_file_upload(
         &self,
         db: &P2PDatabase,
         data: PeerUploadFile,
+        packet_id: String,
         connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         println!("Get token for peer: {}", data.peer_id);
-        let token_info = self.db.get_token(&data.peer_id)
-            .map_err(|e| format!("Ошибка при проверке токена в базе данных: {}", e))?
-            .ok_or_else(|| "Токен не найден в базе данных. Возможно, он был отозван или истек срок его действия".to_string())?;
 
-        if token_info.token != data.token {
-            println!(
-                "Token info: {}. Token in request: {}",
-                token_info.token, data.token
-            );
-            return Err("Токен в запросе не совпадает с токеном в базе данных".to_string());
-        }
+        let (token_info, token_hash, validated_token) = if data.public {
+            // Для публичных файлов используем пустой токен
+            (None, "".to_string(), None)
+        } else {
+            // Для приватных файлов проверяем токен
+            let token_info = self.db.get_token(&data.peer_id)
+                .map_err(|e| format!("Ошибка при проверке токена в базе данных: {}", e))?
+                .ok_or_else(|| "Токен не найден в базе данных. Возможно, он был отозван или истек срок его действия".to_string())?;
 
-        let token_hash = hex::encode(Sha256::digest(data.token.as_bytes()));
+            if token_info.token != data.token {
+                println!(
+                    "Token info: {}. Token in request: {}",
+                    token_info.token, data.token
+                );
+                return Err("Токен в запросе не совпадает с токеном в базе данных".to_string());
+            }
 
-        let validated_token = validate_signature_token(data.token.clone(), &self.db)
-            .await
-            .map_err(|e| format!("Ошибка при проверке подписи токена: {}", e))?;
+            let token_hash = hex::encode(Sha256::digest(data.token.as_bytes()));
+
+            let validated_token = validate_signature_token(data.token.clone(), &self.db)
+                .await
+                .map_err(|e| format!("Ошибка при проверке подписи токена: {}", e))?;
+
+            (Some(token_info), token_hash, Some(validated_token))
+        };
 
         let contents = base64::decode(&data.contents)
             .map_err(|e| format!("Ошибка при декодировании содержимого файла: {}", e))?;
 
-        if contents.len() as u64 > validated_token.file_size {
-            return Err(format!(
-                "Размер файла ({}) превышает разрешенный размер в токене ({})",
-                contents.len(),
-                validated_token.file_size
-            ));
+        // Проверяем размер файла только для приватных файлов
+        if let Some(validated_token) = validated_token {
+            if contents.len() as u64 > validated_token.file_size {
+                return Err(format!(
+                    "Размер файла ({}) превышает разрешенный размер в токене ({})",
+                    contents.len(),
+                    validated_token.file_size
+                ));
+            }
         }
 
         let free_space = self
@@ -103,9 +117,21 @@ impl ConnectionManager {
             .add_storage_fragment(Storage {
                 file_hash: data.file_hash.clone(),
                 filename: data.filename.clone(),
-                token: data.token.clone(),
-                token_hash: Some(token_hash.clone()),
-                uploaded_via_token: Some(data.token.clone()),
+                token: if data.public {
+                    "".to_string()
+                } else {
+                    data.token.clone()
+                },
+                token_hash: if data.public {
+                    None
+                } else {
+                    Some(token_hash.clone())
+                },
+                uploaded_via_token: if data.public {
+                    None
+                } else {
+                    Some(data.token.clone())
+                },
                 owner_key: peer_id.clone(),
                 storage_peer_key: self.db.get_or_create_peer_id().unwrap(),
                 mime: data.mime.clone(),
@@ -114,6 +140,8 @@ impl ConnectionManager {
                 compressed: file_is_compressed,
                 auto_decompress: data.auto_decompress,
                 size: final_contents.len() as u64,
+                tags: vec![],
+                groups: vec![],
             })
             .map_err(|e| format!("Ошибка при добавлении информации о фрагменте: {}", e))?;
 
@@ -124,8 +152,12 @@ impl ConnectionManager {
             to: Some(from_uuid),
             data: Some(TransportData::PeerFileSaved(PeerFileSaved {
                 filename: data.filename,
-                token: data.token,
-                token_hash: Some(token_hash),
+                token: if data.public {
+                    "".to_string()
+                } else {
+                    data.token
+                },
+                token_hash: if data.public { None } else { Some(token_hash) },
                 storage_peer_key: self.db.get_or_create_peer_id().unwrap(),
                 owner_key: peer_id.clone(),
                 hash_file: data.file_hash,
@@ -137,14 +169,26 @@ impl ConnectionManager {
                 mime: data.mime,
             })),
             protocol: Protocol::TURN,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: packet_id,
             nodes: vec![],
         };
 
         connection
             .send_packet(packet_feedback)
             .await
-            .map_err(|e| format!("Ошибка при отправке подтверждения: {}", e))
+            .map_err(|e| format!("Ошибка при отправке подтверждения: {}", e))?;
+
+        connection
+            .send_peer_info_request_self()
+            .await
+            .map_err(|e| {
+                format!(
+                    "Ошибка при отправке запроса на синхронизацию метаданных фрагментов: {}",
+                    e
+                )
+            })?;
+        Ok(())
     }
 
     pub async fn handle_file_saved(&self, data: PeerFileSaved) -> Result<(), String> {
@@ -163,6 +207,8 @@ impl ConnectionManager {
             compressed: data.compressed,
             auto_decompress: data.auto_decompress,
             size: data.size,
+            tags: vec![],
+            groups: vec![],
         });
 
         println!(
@@ -174,6 +220,7 @@ impl ConnectionManager {
 
     pub async fn handle_file_get(
         &self,
+        request_id: String,
         data: PeerFileGet,
         connection: &Connection,
         from_uuid: String,
@@ -195,7 +242,8 @@ impl ConnectionManager {
                         nonce: None,
                     })),
                     protocol: Protocol::TURN,
-                    uuid: self.db.get_or_create_peer_id().unwrap(),
+                    peer_key: self.db.get_or_create_peer_id().unwrap(),
+                    uuid: generate_uuid(),
                     nodes: vec![],
                 };
 
@@ -223,10 +271,12 @@ impl ConnectionManager {
                     encrypted: fragment.encrypted,
                     compressed: fragment.compressed,
                     public: fragment.public,
+                    mime: fragment.mime.clone(),
                     auto_decompress: fragment.auto_decompress,
                 })),
                 protocol: Protocol::TURN,
-                uuid: self.db.get_or_create_peer_id().unwrap(),
+                peer_key: self.db.get_or_create_peer_id().unwrap(),
+                uuid: request_id.clone(),
                 nodes: vec![],
             };
 
@@ -303,17 +353,21 @@ impl ConnectionManager {
         connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
-        let fragments = self.db
+        let fragments = self
+            .db
             .search_fragment_in_virtual_storage(&data.file_hash, None)
             .map_err(|e| format!("Ошибка при поиске файла: {}", e))?;
-        let fragment = fragments.first()
+        let fragment = fragments
+            .first()
             .ok_or_else(|| "Файл не найден".to_string())?;
 
         if fragment.owner_key != from_uuid {
             return Err("У вас нет прав на изменение доступа к этому файлу".to_string());
         }
 
-        let token_info = self.db.get_token(&data.peer_id)
+        let token_info = self
+            .db
+            .get_token(&data.peer_id)
             .map_err(|e| format!("Ошибка при проверке токена в базе данных: {}", e))?
             .ok_or_else(|| "Токен не найден в базе данных".to_string())?;
 
@@ -329,17 +383,38 @@ impl ConnectionManager {
             .update_fragment_public_access(&data.file_hash, data.public)
             .map_err(|e| format!("Ошибка при обновлении доступа: {}", e))?;
 
-        println!("{}", format!("[Peer] Доступ к файлу {} изменен на {}", data.file_hash, if data.public { "публичный" } else { "приватный" }).green());
+        println!(
+            "{}",
+            format!(
+                "[Peer] Доступ к файлу {} изменен на {}",
+                data.file_hash,
+                if data.public {
+                    "публичный"
+                } else {
+                    "приватный"
+                }
+            )
+            .green()
+        );
 
         let packet_feedback = TransportPacket {
             act: "file_access_changed".to_string(),
             to: Some(from_uuid),
             data: Some(TransportData::Message(Message {
-                text: format!("Доступ к файлу {} изменен на {}", data.file_hash, if data.public { "публичный" } else { "приватный" }),
+                text: format!(
+                    "Доступ к файлу {} изменен на {}",
+                    data.file_hash,
+                    if data.public {
+                        "публичный"
+                    } else {
+                        "приватный"
+                    }
+                ),
                 nonce: None,
             })),
             protocol: Protocol::TURN,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -352,17 +427,21 @@ impl ConnectionManager {
         connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
-        let fragments = self.db
+        let fragments = self
+            .db
             .search_fragment_in_virtual_storage(&data.file_hash, None)
             .map_err(|e| format!("Ошибка при поиске файла: {}", e))?;
-        let fragment = fragments.first()
+        let fragment = fragments
+            .first()
             .ok_or_else(|| "Файл не найден".to_string())?;
 
         if fragment.owner_key != from_uuid {
             return Err("У вас нет прав на удаление этого файла".to_string());
         }
 
-        let token_info = self.db.get_token(&data.peer_id)
+        let token_info = self
+            .db
+            .get_token(&data.peer_id)
             .map_err(|e| format!("Ошибка при проверке токена в базе данных: {}", e))?
             .ok_or_else(|| "Токен не найден в базе данных".to_string())?;
 
@@ -388,7 +467,10 @@ impl ConnectionManager {
             .remove_fragment(&data.file_hash)
             .map_err(|e| format!("Ошибка при удалении записи из базы данных: {}", e))?;
 
-        println!("{}", format!("[Peer] Файл {} успешно удален", data.file_hash).green());
+        println!(
+            "{}",
+            format!("[Peer] Файл {} успешно удален", data.file_hash).green()
+        );
 
         let packet_feedback = TransportPacket {
             act: "file_deleted".to_string(),
@@ -398,7 +480,8 @@ impl ConnectionManager {
                 nonce: None,
             })),
             protocol: Protocol::TURN,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
@@ -411,17 +494,21 @@ impl ConnectionManager {
         connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
-        let fragments = self.db
+        let fragments = self
+            .db
             .search_fragment_in_virtual_storage(&data.file_hash, None)
             .map_err(|e| format!("Ошибка при поиске файла: {}", e))?;
-        let fragment = fragments.first()
+        let fragment = fragments
+            .first()
             .ok_or_else(|| "Файл не найден".to_string())?;
 
         if fragment.owner_key != from_uuid {
             return Err("У вас нет прав на перемещение этого файла".to_string());
         }
 
-        let token_info = self.db.get_token(&data.peer_id)
+        let token_info = self
+            .db
+            .get_token(&data.peer_id)
             .map_err(|e| format!("Ошибка при проверке токена в базе данных: {}", e))?
             .ok_or_else(|| "Токен не найден в базе данных".to_string())?;
 
@@ -438,17 +525,28 @@ impl ConnectionManager {
             .update_fragment_path(&data.file_hash, &data.new_path)
             .map_err(|e| format!("Ошибка при обновлении пути: {}", e))?;
 
-        println!("{}", format!("[Peer] Файл {} перемещен в {}", data.file_hash, data.new_path).green());
+        println!(
+            "{}",
+            format!(
+                "[Peer] Файл {} перемещен в {}",
+                data.file_hash, data.new_path
+            )
+            .green()
+        );
 
         let packet_feedback = TransportPacket {
             act: "file_moved".to_string(),
             to: Some(from_uuid),
             data: Some(TransportData::Message(Message {
-                text: format!("Файл {} успешно перемещен в {}", data.file_hash, data.new_path),
+                text: format!(
+                    "Файл {} успешно перемещен в {}",
+                    data.file_hash, data.new_path
+                ),
                 nonce: None,
             })),
             protocol: Protocol::TURN,
-            uuid: self.db.get_or_create_peer_id().unwrap(),
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
             nodes: vec![],
         };
 
