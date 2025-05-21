@@ -22,6 +22,14 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+const SHOW_LOGS: bool = false;
+
+fn log(message: &str) {
+    if SHOW_LOGS {
+        println!("{}", message);
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CachedFile {
     content: Vec<u8>,
@@ -97,7 +105,7 @@ impl HttpApi {
     }
 
     pub async fn set_response(&self, request_id: String, response: TransportPacket) {
-        println!("[HTTP API] Set response for request: {}", request_id);
+        log(&format!("[HTTP API] Set response for request: {}", request_id));
         if let Some((_, sender)) = self.pending_responses.remove(&request_id) {
             let _ = sender.send(response);
         }
@@ -112,13 +120,10 @@ impl HttpApi {
             match TcpListener::bind(addr).await {
                 Ok(l) => {
                     listener = Some(l);
-                    println!(
-                        "{}",
-                        format!("[HTTP API] Listening on http://{}", addr).green()
-                    );
+                    log(&format!("[HTTP API] Listening on http://{}", addr).green());
                 }
                 Err(_) => {
-                    println!("[HTTP API] Port {} is busy, trying {}", port, port + 1);
+                    log(&format!("[HTTP API] Port {} is busy, trying {}", port, port + 1));
                     port += 1;
                 }
             }
@@ -293,13 +298,10 @@ impl HttpApi {
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
         let path = req.uri().path();
         let file_hash = path.strip_prefix("/api/file/").unwrap_or("");
-        println!(
-            "[HTTP API] [DEBUG] Handling get file request for hash: {}",
-            file_hash
-        );
+        log(&format!("[HTTP API] [DEBUG] Handling get file request for hash: {}", file_hash));
 
         if file_hash.is_empty() {
-            println!("[HTTP API] [DEBUG] Empty file hash received");
+            log(&format!("[HTTP API] [DEBUG] Empty file hash received"));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::BAD_REQUEST)
                 .header("Access-Control-Allow-Origin", "*")
@@ -317,25 +319,25 @@ impl HttpApi {
         let mut mime = None;
 
         if indentificator.len() == 64 {
-            println!("[HTTP API] [DEBUG] Searching for fragments with hash length 64");
+            log(&format!("[HTTP API] [DEBUG] Searching for fragments with hash length 64"));
 
             if let Some(cached_owner) = self.fragment_cache.get(&indentificator) {
-                println!(
+                log(&format!(
                     "[HTTP API] [DEBUG] Found cached owner for hash: {}",
                     cached_owner.clone()
-                );
+                ));
                 storage_peer_id = Some(cached_owner.clone());
             } else {
-                println!("[HTTP API] [DEBUG] No cached owner found, searching in local storage");
+                log(&format!("[HTTP API] [DEBUG] No cached owner found, searching in local storage"));
                 if let Ok(fragments) = self
                     .db
                     .search_fragment_in_virtual_storage(&indentificator, None)
                 {
                     if let Some(fragment) = fragments.first() {
-                        println!(
+                        log(&format!(
                             "[HTTP API] [DEBUG] Found fragment in local storage: {:?}",
                             fragment
-                        );
+                        ));
                         self.fragment_cache
                             .insert(indentificator.clone(), fragment.storage_peer_key.clone());
                         storage_peer_id = Some(fragment.storage_peer_key.clone());
@@ -343,12 +345,12 @@ impl HttpApi {
                             fragment.storage_peer_key == self.db.get_or_create_peer_id().unwrap();
                         file_hash = Some(fragment.file_hash.clone());
                         mime = Some(fragment.mime.clone());
-                        println!(
+                        log(&format!(
                             "[HTTP API] [DEBUG] This peer storage file: {}",
                             this_peer_storage_file
-                        );
+                        ));
                     } else {
-                        println!("[HTTP API] [DEBUG] No fragment found in local storage, initiating network search");
+                        log(&format!("[HTTP API] [DEBUG] No fragment found in local storage, initiating network search"));
                         let search_packet = TransportPacket {
                             act: "search_fragments".to_string(),
                             to: None,
@@ -368,29 +370,29 @@ impl HttpApi {
                         self.pending_responses.insert(request_id.clone(), search_tx);
 
                         if let Err(e) = self.api_tx.send(search_packet).await {
-                            println!("[HTTP API] [DEBUG] Failed to send search packet: {}", e);
+                            log(&format!("[HTTP API] [DEBUG] Failed to send search packet: {}", e));
                             return Ok(Response::builder()
                                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                                 .body(full(format!("Failed to send search packet: {}", e)))
                                 .unwrap());
                         }
 
-                        println!("[HTTP API] [DEBUG] Waiting for search response");
+                        log(&format!("[HTTP API] [DEBUG] Waiting for search response"));
                         if let Ok(search_response) =
                             tokio::time::timeout(tokio::time::Duration::from_secs(5), search_rx)
                                 .await
                         {
                             if let Ok(response_data) = search_response {
-                                println!(
+                                log(&format!(
                                     "[HTTP API] [DEBUG] Search response received: {:?}",
                                     response_data
-                                );
+                                ));
                                 if let Some(TransportData::FragmentSearchResponse(response)) =
                                     response_data.data
                                 {
                                     for fragment in response.fragments {
                                         if fragment.file_hash == indentificator {
-                                            println!("[HTTP API] [DEBUG] Found matching fragment in network search");
+                                            log(&format!("[HTTP API] [DEBUG] Found matching fragment in network search"));
                                             self.fragment_cache.insert(
                                                 indentificator.clone(),
                                                 fragment.storage_peer_key.clone(),
@@ -403,7 +405,7 @@ impl HttpApi {
                                 }
                             }
                         } else {
-                            println!("[HTTP API] [DEBUG] Search response timeout");
+                            log(&format!("[HTTP API] [DEBUG] Search response timeout"));
                         }
                     }
                 }
@@ -412,15 +414,12 @@ impl HttpApi {
         let file_hash_clone = file_hash.clone();
         if file_hash.is_some() {
             let file_hash_str = file_hash.unwrap();
-            println!(
-                "[HTTP API] [DEBUG] Checking file cache for hash: {}",
-                file_hash_str
-            );
+            log(&format!("[HTTP API] [DEBUG] Checking file cache for hash: {}", file_hash_str));
             if let Some((cached_content, cached_mime)) = self.get_cached_file(&file_hash_str) {
-                println!(
+                log(&format!(
                     "[HTTP API] [DEBUG] Serving file from cache: {}",
                     file_hash_str
-                );
+                ));
                 return Ok(Response::builder()
                     .status(hyper::StatusCode::OK)
                     .header("Content-Type", cached_mime)
@@ -434,15 +433,15 @@ impl HttpApi {
 
             if this_peer_storage_file {
                 let file_hash_str = file_hash_clone.unwrap();
-                println!(
+                log(&format!(
                     "[HTTP API] [DEBUG] File is stored on this peer, reading from local storage"
-                );
+                ));
 
                 let file_path = format!("{}/{}", self.path_blobs, file_hash_str);
-                println!("[HTTP API] [DEBUG] File path: {}", file_path);
+                log(&format!("[HTTP API] [DEBUG] File path: {}", file_path));
 
                 if !std::path::Path::new(&file_path).exists() {
-                    println!("[HTTP API] [DEBUG] File not found at path: {}", file_path);
+                    log(&format!("[HTTP API] [DEBUG] File not found at path: {}", file_path));
                     return Ok(Response::builder()
                         .status(hyper::StatusCode::NOT_FOUND)
                         .header("Access-Control-Allow-Origin", "*")
@@ -454,11 +453,11 @@ impl HttpApi {
 
                 let file_content = std::fs::read(&file_path).unwrap();
                 let mime_type = mime.unwrap_or("application/octet-stream".to_string());
-                println!(
+                log(&format!(
                     "[HTTP API] [DEBUG] File read successfully, size: {} bytes, mime: {}",
                     file_content.len(),
                     mime_type
-                );
+                ));
 
                 return Ok(Response::builder()
                     .status(hyper::StatusCode::OK)
@@ -472,7 +471,7 @@ impl HttpApi {
             }
         }
 
-        println!("[HTTP API] [DEBUG] Initiating file request from network");
+        log(&format!("[HTTP API] [DEBUG] Initiating file request from network"));
         let (tx, rx) = oneshot::channel();
         self.pending_responses.insert(request_id.clone(), tx);
 
@@ -489,10 +488,10 @@ impl HttpApi {
             uuid: request_id.clone(),
             nodes: vec![],
         };
-        println!("[HTTP API] [DEBUG] Sending get_file packet: {:?}", packet);
+        log(&format!("[HTTP API] [DEBUG] Sending get_file packet: {:?}", packet));
 
         if self.api_tx.is_closed() {
-            println!("[HTTP API] [DEBUG] Channel is closed, attempting to reconnect...");
+            log(&format!("[HTTP API] [DEBUG] Channel is closed, attempting to reconnect..."));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                 .header("Access-Control-Allow-Origin", "*")
@@ -503,7 +502,7 @@ impl HttpApi {
         }
 
         if let Err(e) = self.api_tx.send(packet).await {
-            println!("[HTTP API] [DEBUG] Failed to send get_file packet: {}", e);
+            log(&format!("[HTTP API] [DEBUG] Failed to send get_file packet: {}", e));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                 .header("Access-Control-Allow-Origin", "*")
@@ -513,10 +512,10 @@ impl HttpApi {
                 .unwrap());
         }
 
-        println!("[HTTP API] [DEBUG] Waiting for file response");
+        log(&format!("[HTTP API] [DEBUG] Waiting for file response"));
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(response)) => {
-                println!("[HTTP API] [DEBUG] File response received: {:?}", response);
+                log(&format!("[HTTP API] [DEBUG] File response received: {:?}", response));
                 if let Some(TransportData::FileData(file_data)) = response.data {
                     let file_content = base64::decode(&file_data.contents).unwrap();
                     self.cache_file(
@@ -534,7 +533,7 @@ impl HttpApi {
                         .body(full(file_content))
                         .unwrap())
                 } else {
-                    println!("[HTTP API] [DEBUG] Invalid response format");
+                    log(&format!("[HTTP API] [DEBUG] Invalid response format"));
                     Ok(Response::builder()
                         .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                         .header("Access-Control-Allow-Origin", "*")
@@ -545,7 +544,7 @@ impl HttpApi {
                 }
             }
             _ => {
-                println!("[HTTP API] [DEBUG] File request timeout");
+                log(&format!("[HTTP API] [DEBUG] File request timeout"));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::GATEWAY_TIMEOUT)
                     .header("Access-Control-Allow-Origin", "*")
@@ -590,15 +589,15 @@ impl HttpApi {
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
         let whole_body = req.collect().await?.to_bytes();
-        println!("[HTTP API] Received upload request, body length: {} bytes", whole_body.len());
+        log(&format!("[HTTP API] Received upload request, body length: {} bytes", whole_body.len()));
         
         let upload_request: UploadRequest = match serde_json::from_slice::<UploadRequest>(&whole_body) {
             Ok(r) => {
-                println!("[HTTP API] Successfully parsed upload request for file: {}", r.filename);
+                log(&format!("[HTTP API] Successfully parsed upload request for file: {}", r.filename));
                 r
             },
             Err(e) => {
-                println!("[HTTP API] Failed to parse upload request: {}", e);
+                log(&format!("[HTTP API] Failed to parse upload request: {}", e));
                 return Ok(Response::builder()
                     .status(hyper::StatusCode::BAD_REQUEST)
                     .header("Access-Control-Allow-Origin", "*")
@@ -619,12 +618,12 @@ impl HttpApi {
             .first_or_text_plain()
             .to_string();
 
-        println!("[HTTP API] Processing file upload: filename={}, size={} bytes, mime={}, hash={}", 
+        log(&format!("[HTTP API] Processing file upload: filename={}, size={} bytes, mime={}, hash={}", 
             upload_request.filename, 
             upload_request.contents.len(),
             mime,
             file_hash
-        );
+        ));
 
         let packet = TransportPacket {
             act: "save_file".to_string(),
@@ -647,10 +646,10 @@ impl HttpApi {
             nodes: vec![],
         };
 
-        println!("[HTTP API] Sending save_file packet with request_id: {}", request_id);
+        log(&format!("[HTTP API] Sending save_file packet with request_id: {}", request_id));
 
         if let Err(e) = self.api_tx.send(packet).await {
-            println!("[HTTP API] Failed to send save_file packet: {}", e);
+            log(&format!("[HTTP API] Failed to send save_file packet: {}", e));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                 .header("Access-Control-Allow-Origin", "*")
@@ -660,10 +659,10 @@ impl HttpApi {
                 .unwrap());
         }
 
-        println!("[HTTP API] Waiting for save_file response...");
+        log(&format!("[HTTP API] Waiting for save_file response..."));
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(_)) => {
-                println!("[HTTP API] File successfully saved with hash: {}", file_hash);
+                log(&format!("[HTTP API] File successfully saved with hash: {}", file_hash));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::OK)
                     .header("Content-Type", "application/json")
@@ -677,7 +676,7 @@ impl HttpApi {
                     .unwrap())
             }
             _ => {
-                println!("[HTTP API] Save file request timed out");
+                log(&format!("[HTTP API] Save file request timed out"));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::GATEWAY_TIMEOUT)
                     .header("Access-Control-Allow-Origin", "*")

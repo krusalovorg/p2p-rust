@@ -14,7 +14,7 @@ pub async fn handle_http_proxy_response(
     path_blobs: String,
 ) -> Result<(), String> {
     if let Some(TransportData::ProxyMessage(msg)) = packet.data {
-        println!("[HTTP Proxy] Received encrypted request: {:?}", msg);
+        // println!("[HTTP Proxy] Received encrypted request: {:?}", msg);
 
         let encrypted_request = match base64::decode(&msg.text) {
             Ok(data) => data,

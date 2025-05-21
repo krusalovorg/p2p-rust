@@ -110,10 +110,10 @@ impl ConnectionManager {
                                 .await;
                         }
                         Some(TransportData::FragmentSearchResponse(_)) => {
-                            println!(
-                                "[HTTP Proxy] Getted FragmentSearchResponse from http proxy: {:?}",
-                                packet_clone
-                            );
+                            // println!(
+                            //     "[HTTP Proxy] Getted FragmentSearchResponse from http proxy: {:?}",
+                            //     packet_clone
+                            // );
                             proxy
                                 .set_response(packet_clone.uuid.clone(), packet_clone)
                                 .await;

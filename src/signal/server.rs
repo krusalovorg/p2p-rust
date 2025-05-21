@@ -27,7 +27,7 @@ use crate::signal::signal_servers::{
 };
 use crate::tunnel::Tunnel;
 
-const SHOW_LOGS: bool = true;
+const SHOW_LOGS: bool = false;
 
 fn log(message: &str) {
     if SHOW_LOGS {

@@ -308,7 +308,7 @@ impl ConnectionManager {
         let mut file = File::create(path).await.unwrap();
 
         let contents = base64::decode(data.contents).unwrap();
-        println!("Contents: {:?}", contents);
+        // println!("Contents: {:?}", contents);
 
         let final_contents = if data.encrypted {
             let json_data: EncryptedData = serde_json::from_slice(&contents)
