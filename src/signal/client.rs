@@ -31,7 +31,7 @@ pub struct SignalClient {
 
 impl SignalClient {
     pub fn new(db: &P2PDatabase) -> Self {
-        let (message_tx, message_rx) = mpsc::channel(100);
+        let (message_tx, message_rx) = mpsc::channel(1024);
         SignalClient {
             writer: None,
             reader: None,
@@ -160,10 +160,10 @@ impl SignalClient {
         let len_bytes = message_len.to_be_bytes();
 
         if let Some(writer) = &self.writer {
-            println!(
-                "[SignalClient] Sending packet to signal server: {}",
-                string_packet
-            );
+            // println!(
+            //     "[SignalClient] Sending packet to signal server: {}",
+            //     string_packet
+            // );
 
             let mut writer_guard = writer.write().await;
             

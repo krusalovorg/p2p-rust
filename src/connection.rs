@@ -35,6 +35,8 @@ pub struct Connection {
     pub ip: String,
     pub port: i64,
     db: Arc<P2PDatabase>,
+    reconnect_attempts: Arc<RwLock<i32>>,
+    max_reconnect_attempts: i32,
 }
 
 impl Connection {
@@ -43,17 +45,58 @@ impl Connection {
         signal_server_port: i64,
         db: &P2PDatabase,
     ) -> Connection {
-        let (tx, rx) = mpsc::channel(16);
+        let (tx, rx) = mpsc::channel(1024);
+        let reconnect_attempts = Arc::new(RwLock::new(0));
+        let max_reconnect_attempts = 10;
 
-        let stream = TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port))
-            .await
-            .unwrap();
+        let connection = Self::establish_connection(
+            &signal_server_ip,
+            signal_server_port,
+            db,
+            tx.clone(),
+            rx,
+            reconnect_attempts.clone(),
+            max_reconnect_attempts,
+        ).await;
+
+        connection
+    }
+
+    async fn establish_connection(
+        signal_server_ip: &str,
+        signal_server_port: i64,
+        db: &P2PDatabase,
+        tx: mpsc::Sender<Message>,
+        rx: mpsc::Receiver<Message>,
+        reconnect_attempts: Arc<RwLock<i32>>,
+        max_reconnect_attempts: i32,
+    ) -> Connection {
+        let mut attempts = 0;
+        let mut stream = None;
+
+        while attempts < max_reconnect_attempts {
+            match TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port)).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(e) => {
+                    log(&format!("[Connection] Failed to connect (attempt {}/{}): {}", 
+                        attempts + 1, max_reconnect_attempts, e));
+                    attempts += 1;
+                    if attempts < max_reconnect_attempts {
+                        sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        }
+
+        let stream = stream.expect("Failed to establish connection after maximum attempts");
         let (reader, writer) = split(stream);
 
         let reader = Arc::new(RwLock::new(reader));
         let writer = Arc::new(RwLock::new(writer));
 
-        // Отправляем пакет при создании соединения
         let connect_packet = TransportPacket {
             act: "info".to_string(),
             to: None,
@@ -90,9 +133,11 @@ impl Connection {
             tx, 
             writer, 
             reader,
-            ip: signal_server_ip,
+            ip: signal_server_ip.to_string(),
             port: signal_server_port,
             db: Arc::new(db.clone()),
+            reconnect_attempts,
+            max_reconnect_attempts,
         }
     }
     
@@ -219,7 +264,6 @@ impl Connection {
         }
         let packet_len = u32::from_be_bytes(len_bytes) as usize;
         
-        // Читаем само сообщение
         let mut packet_bytes = vec![0u8; packet_len];
         if let Err(e) = reader.read_exact(&mut packet_bytes).await {
             if e.kind() == std::io::ErrorKind::ConnectionReset {
@@ -242,12 +286,48 @@ impl Connection {
         }
     }
 
+    pub async fn receive_message_with_reconnect(
+        &self,
+    ) -> Result<TransportPacket, String> {
+        match Self::receive_message(&self.reader).await {
+            Ok(packet) => Ok(packet),
+            Err(e) => {
+                if e.contains("Connection reset by peer") || e.contains("Failed to receive message") {
+                    log(&format!("[Connection] Connection lost while receiving: {}", e));
+                    match self.handle_connection_loss().await {
+                        Ok(_) => {
+                            Self::receive_message(&self.reader).await
+                        }
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
     pub async fn send_peer_info_request_self(&self) -> Result<(), String> {
         Self::send_peer_info_request(&self.writer, &self.db).await
     }
 
     pub async fn send_packet(&self, packet: TransportPacket) -> Result<(), String> {
-        Self::write_packet(&self.writer, &packet).await
+        match Self::write_packet(&self.writer, &packet).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if e.contains("Connection reset by peer") || e.contains("Failed to send packet length") {
+                    log(&format!("[Connection] Connection lost while sending packet: {}", e));
+                    match self.handle_connection_loss().await {
+                        Ok(_) => {
+                            Self::write_packet(&self.writer, &packet).await
+                        }
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     pub async fn get_response(&self) -> Result<TransportPacket, String> {
@@ -255,7 +335,57 @@ impl Connection {
         self.tx.send(Message::GetResponse { tx }).await.unwrap();
         match rx.await {
             Ok(response) => Ok(response),
-            Err(_) => Err("Failed to receive response from server".to_string()),
+            Err(_) => {
+                match self.handle_connection_loss().await {
+                    Ok(_) => {
+                        let (tx, rx) = oneshot::channel();
+                        self.tx.send(Message::GetResponse { tx }).await.unwrap();
+                        match rx.await {
+                            Ok(response) => Ok(response),
+                            Err(_) => Err("Failed to receive response from server".to_string()),
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
+            }
         }
+    }
+
+    pub async fn handle_connection_loss(&self) -> Result<(), String> {
+        let mut attempts = self.reconnect_attempts.write().await;
+        if *attempts >= self.max_reconnect_attempts {
+            return Err("Maximum reconnection attempts reached".to_string());
+        }
+
+        *attempts += 1;
+        log(&format!("[Connection] Attempting to reconnect (attempt {}/{})", 
+            *attempts, self.max_reconnect_attempts));
+
+        // Пытаемся установить новое соединение
+        let stream = match TcpStream::connect(format!("{}:{}", self.ip, self.port)).await {
+            Ok(s) => s,
+            Err(e) => {
+                log(&format!("[Connection] Failed to connect: {}", e));
+                return Err(e.to_string());
+            }
+        };
+
+        let (reader, writer) = split(stream);
+        
+        // Обновляем reader и writer
+        {
+            let mut current_reader = self.reader.write().await;
+            let mut current_writer = self.writer.write().await;
+            *current_reader = reader;
+            *current_writer = writer;
+        }
+
+        // Отправляем info пакет после переподключения
+        if let Err(e) = self.send_peer_info_request_self().await {
+            log(&format!("[Connection] Failed to send peer info after reconnect: {}", e));
+            return Err(e);
+        }
+
+        Ok(())
     }
 }

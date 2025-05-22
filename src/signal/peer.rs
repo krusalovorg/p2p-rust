@@ -52,7 +52,7 @@ impl Peer {
         let (reader, writer) = split(socket);
         let reader = Arc::new(RwLock::new(reader));
         let writer = Arc::new(RwLock::new(writer));
-        let (tx, _) = mpsc::channel(100); // Оставляем канал для совместимости с существующим кодом
+        let (tx, _) = mpsc::channel(1024);
 
         Arc::new(Self {
             reader,

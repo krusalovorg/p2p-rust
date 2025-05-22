@@ -19,7 +19,7 @@ pub fn print_welcome() {
     ╚══════╝╚═╝   ╚═╝   ╚══════╝    ╚═╝     ╚══════╝╚══════╝╚═╝  ╚═╝
     "#.bright_blue());
     println!("{}", "                    P2P File Sharing Network".bright_cyan());
-    println!("{}", "                    Version 2.0".bright_yellow());
+    println!("{}", "                    Version 2.1.1".bright_yellow());
     println!("\n{}", "Добро пожаловать в LITE PEER TO LITE NODE!".bright_green());
     println!("{}", "Введите 'help' для просмотра доступных команд\n".bright_white());
 }

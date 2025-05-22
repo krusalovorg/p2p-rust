@@ -1,12 +1,9 @@
-#!/bin/bash
+# Останавливаем контейнеры
+docker stop p2p-server p2p-peer
+docker rm p2p-server p2p-peer
 
-# Собираем проект
-echo "Building Rust project..."
-cargo build --release
-
-# Создаем Dockerfile на сервере
-echo "Creating Dockerfile on server..."
-ssh root@212.109.220.163 "cat > /root/p2p-server/Dockerfile << 'EOL'
+# Создаем новый Dockerfile с правами на выполнение
+cat > /root/p2p-server/Dockerfile << 'EOL'
 FROM debian:latest
 
 RUN apt-get update && apt-get install -y \
@@ -20,31 +17,39 @@ COPY P2P-Server .
 COPY config.toml .
 COPY signal_servers.json .
 
+# Устанавливаем права на выполнение
+RUN chmod +x P2P-Server
+
 EXPOSE 8081 8080 3031 80
 
-CMD [\"./P2P-Server\", \"--signal\"]
-EOL"
+# Создаем директорию для хранения данных пира
+RUN mkdir -p /app/storage-peer
 
-# Копируем файлы на сервер
-echo "Copying files to server..."
-scp target/release/P2P-Server root@212.109.220.163:/root/p2p-server/
-scp config.toml root@212.109.220.163:/root/p2p-server/
-scp signal_servers.json root@212.109.220.163:/root/p2p-server/
+# Используем скрипт для запуска разных конфигураций
+COPY start.sh .
+RUN chmod +x start.sh
 
-# Собираем и запускаем Docker контейнер на сервере
-echo "Building and running Docker container..."
-ssh root@212.109.220.163 "cd /root/p2p-server && \
-    docker stop p2p-server 2>/dev/null || true && \
-    docker rm p2p-server 2>/dev/null || true && \
-    docker build -t p2p-server . && \
-    docker run -d \
-        --name p2p-server \
-        --restart unless-stopped \
-        -p 8081:8081 \
-        -p 8080:8080 \
-        -p 3031:3031 \
-        -p 80:80 \
-        p2p-server"
+CMD ["./start.sh"]
+EOL
 
-echo "Deployment completed!"
-echo "You can check logs with: ssh root@212.109.220.163 'docker logs -f p2p-server'" 
+# Пересобираем и запускаем контейнеры
+docker build -t p2p-server /root/p2p-server
+
+# Запускаем сигнальный сервер
+docker run -d \
+    --name p2p-server \
+    --restart unless-stopped \
+    -p 8081:8081 \
+    -p 8080:8080 \
+    -p 3031:3031 \
+    -p 80:80 \
+    -e CONTAINER_TYPE=signal \
+    p2p-server
+
+# Запускаем пир
+docker run -d \
+    --name p2p-peer \
+    --restart unless-stopped \
+    -e CONTAINER_TYPE=peer \
+    -v /root/p2p-server/storage-peer:/app/storage-peer \
+    p2p-server

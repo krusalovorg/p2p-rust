@@ -63,14 +63,8 @@ impl Tunnel {
         return format!("{}:{}", self.public_ip, self.public_port);
     }
 
-    async fn stun(port: u16) -> (String, u16) {
-        let client = Client::new(format!("0.0.0.0:{}", port), None).await;
-        if let Err(e) = client {
-            panic!("Failed to create STUN client: {:?}", e);
-        }
-        let mut client = client.unwrap();
-
-        let stun_servers = vec![
+    async fn load_stun_servers() -> Vec<String> {
+        let default_servers = vec![
             "stun.l.google.com:19302",
             "stun1.l.google.com:19302",
             "stun2.l.google.com:19302",
@@ -80,11 +74,43 @@ impl Tunnel {
             "stun.voipstunt.com:3478"
         ];
 
+        match fs::read_to_string("stun_servers.txt").await {
+            Ok(content) => {
+                let mut servers: Vec<String> = content
+                    .lines()
+                    .map(|line| line.trim().to_string())
+                    .filter(|line| !line.is_empty())
+                    .collect();
+                
+                for server in default_servers {
+                    if !servers.contains(&server.to_string()) {
+                        servers.push(server.to_string());
+                    }
+                }
+                servers
+            }
+            Err(e) => {
+                println!("[WARNING] Failed to load STUN servers from file: {:?}. Using default servers.", e);
+                default_servers.into_iter().map(|s| s.to_string()).collect()
+            }
+        }
+    }
+
+    async fn stun(port: u16) -> (String, u16) {
+        let client = Client::new(format!("0.0.0.0:{}", port), None).await;
+        if let Err(e) = client {
+            panic!("Failed to create STUN client: {:?}", e);
+        }
+        let mut client = client.unwrap();
+
+        let stun_servers = Self::load_stun_servers().await;
+        println!("[DEBUG] Loaded {} STUN servers", stun_servers.len());
+
         let mut last_error = None;
         let mut last_res = None;
         for server in stun_servers {
             println!("[DEBUG] Trying STUN server: {}", server);
-            let res = client.binding_request(server, None).await;
+            let res = client.binding_request(&server, None).await;
             match res {
                 Ok(response) => {
                     println!("[DEBUG] Successfully connected to STUN server: {}", server);
@@ -99,8 +125,12 @@ impl Tunnel {
             }
         }
 
-        if let Some(e) = last_error {
-            panic!("Failed to connect to any STUN server. Last error: {:?}", e);
+        if last_res.is_none() {
+            if let Some(e) = last_error {
+                panic!("Failed to connect to any STUN server. Last error: {:?}", e);
+            } else {
+                panic!("Failed to connect to any STUN server and no error was recorded");
+            }
         }
 
         let res = last_res.unwrap();

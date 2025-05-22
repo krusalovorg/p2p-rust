@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LITE PEER 2 LITE NODE - Демо Децентрализованной Сети</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" href="http://212.109.220.163:8080/a42e06fb2c2b6cadd3e21f7a7d579e0dc205614bb57052598b59b5117b108760">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;700&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
     <style>
         body {
@@ -473,7 +474,7 @@
             }
         }
 
-        @media (max-width: 600px) {
+        @media (max-width: 768px) {
             html, body {
                 padding: 0 !important;
                 margin: 0 !important;
@@ -611,11 +612,11 @@
                         <p id="connection-type" class="text-blue-400 text-lg">Загрузка...</p>
                     </div>
                 </div>
-                <div class="text-center mt-6">
+                <!-- <div class="text-center mt-6">
                     <button id="ping-neighbors-btn" class="btn-action text-white font-semibold py-3 px-8 rounded-lg text-lg">
                         🔄 Пинг соседей
                     </button>
-                </div>
+                </div> -->
             </section>
 
             <section id="network-features" class="section section-fullscreen glassmorphism p-6 md:p-8 rounded-xl shadow-2xl text-left">
@@ -631,7 +632,7 @@
                     <div class="info-card">
                         <label for="file-input" class="block text-sm font-medium text-gray-300 mb-2">Выберите файл:</label>
                         <input type="file" id="file-input" name="file-input" accept="image/*" required class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 focus:ring-offset-gray-800 rounded-md border border-gray-600 p-2.5">
-                        <p class="mt-2 text-xs text-gray-500">Только изображения (JPG, PNG, GIF и т.д.)</p>
+                        <p class="mt-2 text-xs text-gray-500">Только изображения (JPG, PNG, GIF и т.д.). Максимальный размер: 10 МБ</p>
                     </div>
                     <button type="submit" id="upload-button" class="w-full btn-action text-white font-semibold py-3 px-6 rounded-lg text-lg flex items-center justify-center">
                         <span id="upload-button-text">Загрузить в сеть</span>
@@ -683,7 +684,7 @@
         </footer>
     </div>
 
-    <div id="peers-modal" class="fixed inset-0 bg-black bg-opacity-80 backdrop-blur-md flex items-center justify-center p-4 hidden z-50">
+    <!-- <div id="peers-modal" class="fixed inset-0 bg-black bg-opacity-80 backdrop-blur-md flex items-center justify-center p-4 hidden z-50">
         <div class="glassmorphism p-6 rounded-xl shadow-2xl w-full max-w-md border border-gray-700">
             <div class="flex justify-between items-center mb-6">
                 <h3 class="text-xl font-semibold neon-accent-purple">Ближайшие пиры</h3>
@@ -693,7 +694,7 @@
                 <p class="text-gray-400">Загрузка списка пиров...</p>
             </div>
         </div>
-    </div>
+    </div> -->
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
@@ -1100,17 +1101,60 @@
                 const copyLinkButton = document.createElement('button');
                 copyLinkButton.textContent = '🔗 Копировать ссылку';
                 copyLinkButton.className = 'w-full text-xs bg-purple-600 hover:bg-purple-700 text-white py-1.5 px-3 rounded-md transition-all duration-300';
-                copyLinkButton.onclick = () => {
+                copyLinkButton.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     const urlToCopy = getDirectFileUrl(file.file_hash);
-                    navigator.clipboard.writeText(urlToCopy).then(() => {
-                        copyLinkButton.textContent = 'Скопировано!';
-                        setTimeout(() => { copyLinkButton.textContent = '🔗 Копировать ссылку'; }, 2000);
-                    }).catch(err => {
+                    
+                    // Функция для копирования через временный input
+                    const fallbackCopy = (text) => {
+                        const textArea = document.createElement('textarea');
+                        textArea.value = text;
+                        textArea.style.position = 'fixed';
+                        textArea.style.left = '-999999px';
+                        textArea.style.top = '-999999px';
+                        document.body.appendChild(textArea);
+                        textArea.focus();
+                        textArea.select();
+                        
+                        try {
+                            document.execCommand('copy');
+                            return true;
+                        } catch (err) {
+                            console.error('Ошибка при копировании:', err);
+                            return false;
+                        } finally {
+                            document.body.removeChild(textArea);
+                        }
+                    };
+
+                    try {
+                        // Пробуем использовать Clipboard API
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            await navigator.clipboard.writeText(urlToCopy);
+                        } else {
+                            // Если Clipboard API недоступен, используем fallback
+                            if (!fallbackCopy(urlToCopy)) {
+                                throw new Error('Не удалось скопировать текст');
+                            }
+                        }
+                        
+                        const originalText = copyLinkButton.textContent;
+                        copyLinkButton.textContent = '✓ Скопировано!';
+                        copyLinkButton.classList.add('bg-green-600', 'hover:bg-green-700');
+                        setTimeout(() => {
+                            copyLinkButton.textContent = originalText;
+                            copyLinkButton.classList.remove('bg-green-600', 'hover:bg-green-700');
+                            copyLinkButton.classList.add('bg-purple-600', 'hover:bg-purple-700');
+                        }, 2000);
+                    } catch (err) {
                         console.error('Не удалось скопировать ссылку: ', err);
-                        copyLinkButton.textContent = 'Ошибка копирования';
-                        setTimeout(() => { copyLinkButton.textContent = '🔗 Копировать ссылку'; }, 2000);
-                    });
-                };
+                        copyLinkButton.textContent = '❌ Ошибка копирования';
+                        setTimeout(() => {
+                            copyLinkButton.textContent = '🔗 Копировать ссылку';
+                        }, 2000);
+                    }
+                });
 
                 item.appendChild(imgLink);
                 item.appendChild(name);
@@ -1123,46 +1167,64 @@
         }
         
         // --- Event Listeners ---
-        pingNeighborsBtn.addEventListener('click', async () => {
-            peersListEl.innerHTML = '<p class="text-gray-400 animate-pulse">Загрузка списка пиров...</p>';
-            peersModal.classList.remove('hidden');
-            const peers = await fetchPeers();
-            updatePeersUI(peers);
-        });
+        if (pingNeighborsBtn) {
+            pingNeighborsBtn.addEventListener('click', async () => {
+                peersListEl.innerHTML = '<p class="text-gray-400 animate-pulse">Загрузка списка пиров...</p>';
+                peersModal.classList.remove('hidden');
+                const peers = await fetchPeers();
+                updatePeersUI(peers);
+            });
+        }
 
-        closeModalBtn.addEventListener('click', () => peersModal.classList.add('hidden'));
-        peersModal.addEventListener('click', (event) => {
-            if (event.target === peersModal) peersModal.classList.add('hidden');
-        });
+        if (closeModalBtn) {
+            closeModalBtn.addEventListener('click', () => peersModal.classList.add('hidden'));
+        }
 
-        uploadForm.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const file = fileInput.files[0];
+        if (peersModal) {
+            peersModal.addEventListener('click', (event) => {
+                if (event.target === peersModal) peersModal.classList.add('hidden');
+            });
+        }
 
-            if (!file) {
-                uploadStatusEl.innerHTML = `<p class="text-red-400">Пожалуйста, выберите файл для загрузки.</p>`;
-                return;
-            }
+        if (uploadForm) {
+            uploadForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const file = fileInput.files[0];
 
-            try {
-                const result = await handleUploadFile(file);
-                uploadStatusEl.innerHTML = `
-                    <div class="bg-green-500 bg-opacity-20 p-4 rounded-lg">
-                        <p class="text-green-400">Файл "${file.name}" успешно загружен!</p>
-                        <p class="text-sm text-gray-300 mt-2">Hash: <span class="font-jetbrains-mono">${result.file_hash}</span></p>
-                        <p class="text-sm text-gray-400 mt-1">Ссылка: <a href="${getDirectFileUrl(result.file_hash)}" target="_blank" class="text-purple-400 hover:underline">${getDirectFileUrl(result.file_hash)}</a></p>
-                    </div>`;
-                uploadForm.reset();
-                await loadGallery();
-            } catch (error) {
-                uploadStatusEl.innerHTML = `
-                    <div class="bg-red-500 bg-opacity-20 p-4 rounded-lg">
-                        <p class="text-red-400">Ошибка загрузки: ${error.message || 'Неизвестная ошибка'}</p>
-                    </div>`;
-            }
-        });
+                if (!file) {
+                    uploadStatusEl.innerHTML = `<p class="text-red-400">Пожалуйста, выберите файл для загрузки.</p>`;
+                    return;
+                }
 
-        refreshGalleryBtn.addEventListener('click', loadGallery);
+                // Проверка размера файла (10 МБ = 10 * 1024 * 1024 байт)
+                const maxSize = 10 * 1024 * 1024;
+                if (file.size > maxSize) {
+                    uploadStatusEl.innerHTML = `<p class="text-red-400">Размер файла превышает 10 МБ. Пожалуйста, выберите файл меньшего размера.</p>`;
+                    return;
+                }
+
+                try {
+                    const result = await handleUploadFile(file);
+                    uploadStatusEl.innerHTML = `
+                        <div class="bg-green-500 bg-opacity-20 p-4 rounded-lg">
+                            <p class="text-green-400">Файл "${file.name}" успешно загружен!</p>
+                            <p class="text-sm text-gray-300 mt-2">Hash: <span class="font-jetbrains-mono">${result.file_hash}</span></p>
+                            <p class="text-sm text-gray-400 mt-1">Ссылка: <a href="${getDirectFileUrl(result.file_hash)}" target="_blank" class="text-purple-400 hover:underline">${getDirectFileUrl(result.file_hash)}</a></p>
+                        </div>`;
+                    uploadForm.reset();
+                    await loadGallery();
+                } catch (error) {
+                    uploadStatusEl.innerHTML = `
+                        <div class="bg-red-500 bg-opacity-20 p-4 rounded-lg">
+                            <p class="text-red-400">Ошибка загрузки: ${error.message || 'Неизвестная ошибка'}</p>
+                        </div>`;
+                }
+            });
+        }
+
+        if (refreshGalleryBtn) {
+            refreshGalleryBtn.addEventListener('click', loadGallery);
+        }
 
         async function loadGallery() {
             galleryLoadingTextEl.classList.remove('hidden');
@@ -1191,6 +1253,7 @@
             
             loadGallery();
         });
+        
         fetchCurrentNodeInfo().then(updateNodeInfoUI).catch(error => {
             console.error("Не удалось загрузить информацию об узле:", error);
             updateNodeInfoUI({ nodeId: 'Ошибка', hostType: 'N/A', status: 'OFFLINE', connectionType: 'N/A' });
@@ -1200,6 +1263,12 @@
         document.addEventListener('DOMContentLoaded', () => {
             const sections = document.querySelectorAll('.section');
             const dots = document.querySelectorAll('.nav-dot');
+            
+            if (sections.length === 0 || dots.length === 0) {
+                console.warn('Навигационные элементы не найдены');
+                return;
+            }
+
             let currentSection = 0;
 
             // Функция для обновления активной секции

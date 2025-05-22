@@ -27,7 +27,7 @@ use crate::signal::signal_servers::{
 };
 use crate::tunnel::Tunnel;
 
-const SHOW_LOGS: bool = false;
+const SHOW_LOGS: bool = true;
 
 fn log(message: &str) {
     if SHOW_LOGS {
@@ -56,10 +56,10 @@ pub struct SignalServer {
 
 impl SignalServer {
     pub async fn new(config: &Config, db: &P2PDatabase) -> Arc<Self> {
-        let (message_tx, mut message_rx) = mpsc::channel(1000);
-        let (response_tx, mut response_rx) = mpsc::channel(1000);
-        let (proxy_http_tx, mut proxy_http_rx) = mpsc::channel(1000);
-        let (api_http_tx, mut api_http_rx) = mpsc::channel(1000);
+        let (message_tx, mut message_rx) = mpsc::channel(4096);
+        let (response_tx, mut response_rx) = mpsc::channel(4096);
+        let (proxy_http_tx, mut proxy_http_rx) = mpsc::channel(4096);
+        let (api_http_tx, mut api_http_rx) = mpsc::channel(4096);
 
         let tunnel = Tunnel::new().await;
         let public_ip = tunnel.get_public_ip();
@@ -141,9 +141,10 @@ impl SignalServer {
 
         if let Ok(mut servers_list) = SignalServersList::load_or_create() {
             for server_info in servers_list.servers.iter() {
-                if (server_info.public_ip == "127.0.0.1"
+                if ((server_info.public_ip == "127.0.0.1"
                     && server_info.port != config.signal_server_port)
-                    || server_info.public_ip != "127.0.0.1"
+                    || server_info.public_ip != "127.0.0.1")
+                    && server_info.public_ip != tunnel.get_public_ip()
                 {
                     let server_addr = format!("{}:{}", server_info.public_ip, server_info.port);
                     let server_clone = Arc::clone(&server_arc);
@@ -390,34 +391,53 @@ impl SignalServer {
                         "[SignalServer] Failed to receive message from peer {}: {}",
                         peer.info.local_addr, e
                     ));
-                    if e == "Peer disconnected" {
-                        self.remove_peer(&peer).await;
-                        break;
-                    }
-                    continue;
+                    self.remove_peer(&peer).await;
+                    break;
                 }
             };
-            log(&format!("[SignalServer] Received message: {}", message));
+            log(&format!("[SignalServer] Received message"));
 
             if let Err(e) = self.message_tx.send((peer.clone(), message)).await {
                 log(&format!(
                     "[SignalServer] Failed to send message to handler: {}",
                     e
                 ));
+                self.remove_peer(&peer).await;
+                break;
             }
         }
+        log(&format!(
+            "[SignalServer] Connection handler finished for peer: {}",
+            peer.info.local_addr
+        ));
     }
 
     async fn remove_peer(self: Arc<Self>, peer: &Arc<Peer>) -> bool {
+        let peer_addr = peer.info.local_addr.clone();
+        let peer_key = peer.info.peer_key.read().await.clone();
+        
         let mut peers = self.peers.write().await;
         let peer_index = peers
             .iter()
-            .position(|p| p.info.local_addr == peer.info.local_addr);
+            .position(|p| p.info.local_addr == peer_addr);
 
         if let Some(index) = peer_index {
             peers.remove(index);
+            
+            if let Some(key) = &peer_key {
+                self.pending_responses.remove(key);
+            }
+            
+            log(&format!(
+                "[SignalServer] Successfully removed peer {} with key {:?}",
+                peer_addr, peer_key
+            ));
             true
         } else {
+            log(&format!(
+                "[SignalServer] Peer {} not found in the list",
+                peer_addr
+            ));
             false
         }
     }
@@ -551,7 +571,7 @@ impl SignalServer {
                                 "[SignalServer] Failed to add signal server to list: {}",
                                 e
                             ));
-                        } else {
+                        } else if stored_info.public_ip != self.ip.to_string() {
                             let server_addr =
                                 format!("{}:{}", stored_info.public_ip, stored_info.port);
                             let server_clone = Arc::clone(server);
@@ -946,7 +966,8 @@ impl SignalServer {
                     sended = true;
                 }
             }
-            if !sended {
+            let len_connected_servers = self.connected_servers.read().await.len();
+            if !sended && len_connected_servers > 0 {
                 for server in self.connected_servers.read().await.iter() {
                     if server.public_key != from_peer_id {
                         log(&format!(

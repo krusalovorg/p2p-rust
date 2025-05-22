@@ -35,9 +35,9 @@ pub struct ConnectionManager {
 
 impl ConnectionManager {
     pub async fn new(db: &P2PDatabase) -> Self {
-        let (incoming_packet_tx, incoming_packet_rx) = mpsc::channel(100);
-        let (proxy_http_tx, mut proxy_http_rx) = mpsc::channel(1000);
-        let (proxy_http_tx_reciever, mut proxy_http_rx_reciever) = mpsc::channel(1000);
+        let (incoming_packet_tx, incoming_packet_rx) = mpsc::channel(4096);
+        let (proxy_http_tx, mut proxy_http_rx) = mpsc::channel(4096);
+        let (proxy_http_tx_reciever, mut proxy_http_rx_reciever) = mpsc::channel(4096);
 
         let connections_turn: Arc<DashMap<String, ConnectionTurnStatus>> = Arc::new(DashMap::new());
 
@@ -150,7 +150,7 @@ impl ConnectionManager {
 
     pub async fn auto_send_packet(&self, packet: TransportPacket) {
         let mut sended_by_uuid = false;
-        println!("Auto send packet: {:?}", packet);
+        // println!("Auto send packet: {:?}", packet);
 
         // if let Some(to) = &packet.to {
         //     if let Some(tunnel) = self.tunnels.get(to) {
@@ -270,7 +270,7 @@ impl ConnectionManager {
         let tunnel_clone_for_spawn = tunnel_clone.clone();
 
         tokio::spawn(async move {
-            let (local_tx, mut local_rx) = mpsc::channel::<Vec<u8>>(16);
+            let (local_tx, mut local_rx) = mpsc::channel::<Vec<u8>>(1024);
 
             tokio::spawn(async move {
                 while let Some(data) = local_rx.recv().await {

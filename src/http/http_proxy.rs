@@ -284,6 +284,7 @@ impl HttpProxy {
                 }
             }
         } else {
+            println!("[HTTP Proxy] [DEBUG] No cached owner found, searching in storage");
             if let Ok(fragments) = self.db.search_fragment_in_virtual_storage(&peer_id, None) {
                 if let Some(fragment) = fragments.first() {
                     println!("[HTTP Proxy] [DEBUG] Found fragment in local storage");
@@ -293,6 +294,7 @@ impl HttpProxy {
                     file_hash = Some(fragment.file_hash.clone());
                     mime = Some(fragment.mime.clone());
                 } else {
+                    println!("[HTTP Proxy] [DEBUG] No fragment found locally, sending search request");
                     let search_packet = TransportPacket {
                         act: "search_fragments".to_string(),
                         to: None,
@@ -311,12 +313,15 @@ impl HttpProxy {
                     let (search_tx, search_rx) = oneshot::channel();
                     self.pending_responses.insert(request_id.clone(), search_tx);
 
+                    println!("[HTTP Proxy] [DEBUG] Sending search packet");
                     self.proxy_tx.send(search_packet).await.unwrap();
+                    println!("[HTTP Proxy] [DEBUG] Search packet sent, waiting for response");
 
                     if let Ok(search_response) =
                         tokio::time::timeout(tokio::time::Duration::from_secs(5), search_rx)
                             .await
                     {
+                        println!("[HTTP Proxy] [DEBUG] Got search response");
                         if let Ok(response_data) = search_response {
                             println!("[HTTP Proxy] Search response: {:?}", response_data);
                             if let Some(TransportData::FragmentSearchResponse(response)) =
@@ -324,6 +329,7 @@ impl HttpProxy {
                             {
                                 for fragment in response.fragments {
                                     if fragment.file_hash == peer_id {
+                                        println!("[HTTP Proxy] [DEBUG] Found matching fragment in search response");
                                         self.fragment_cache.insert(
                                             peer_id.clone(),
                                             fragment.storage_peer_key.clone(),
@@ -334,6 +340,8 @@ impl HttpProxy {
                                 }
                             }
                         }
+                    } else {
+                        println!("[HTTP Proxy] [DEBUG] Search response timeout");
                     }
                 }
             }
@@ -398,12 +406,14 @@ impl HttpProxy {
             }
         }
 
+        println!("[HTTP Proxy] [DEBUG] Preparing to send HTTP request packet");
         let (tx, rx) = oneshot::channel();
         self.pending_responses.insert(request_id.clone(), tx);
 
         let encrypted = match self.db.encrypt_message(request_str.as_bytes(), &peer_id) {
             Ok(e) => e,
             Err(_) => {
+                println!("[HTTP Proxy] [DEBUG] Encryption failed");
                 return Ok(Response::builder()
                     .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                     .body(full("Encryption failed"))
@@ -428,10 +438,13 @@ impl HttpProxy {
             nodes: vec![],
         };
 
+        println!("[HTTP Proxy] [DEBUG] Sending HTTP request packet");
         self.proxy_tx.send(packet).await.unwrap();
+        println!("[HTTP Proxy] [DEBUG] HTTP request packet sent, waiting for response");
 
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(packet)) => {
+                println!("[HTTP Proxy] [DEBUG] Got HTTP response packet");
                 if let Some(TransportData::ProxyMessage(msg)) = packet.data {
                     let file_content = match base64::decode(&msg.text) {
                         Ok(content) => content,
@@ -485,12 +498,6 @@ impl HttpProxy {
                         .header("Cache-Control", "no-cache")
                         .header("X-Content-Type-Options", "nosniff");
 
-                    // let cookie = format!(
-                    //     "peer_id={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=300",
-                    //     peer_id
-                    // );
-                    // response_builder = response_builder.header("Set-Cookie", cookie);
-
                     if file_hash_clone.is_some() {
                         self.cache_file(
                             file_hash_clone.unwrap(),
@@ -522,23 +529,42 @@ impl HttpProxy {
         let cached_file = CachedFile {
             content,
             mime_type,
-            expires_at: Instant::now() + Duration::from_secs(300),
+            expires_at: Instant::now() + Duration::from_secs(60),//300
         };
-        self.file_cache.insert(file_hash, cached_file);
+        
+        let cache = self.file_cache.clone();
+        let file_hash_clone = file_hash.clone();
+        
+        tokio::spawn(async move {
+            cache.insert(file_hash_clone, cached_file);
+            println!("[HTTP PROXY] File cached successfully: {}", file_hash);
+        });
     }
 
     fn get_cached_file(&self, file_hash: &str) -> Option<(Vec<u8>, String)> {
         println!("[HTTP PROXY] Checking cache for file: {}", file_hash);
-        if let Some(cached) = self.file_cache.get(file_hash) {
-            if cached.expires_at > Instant::now() {
-                println!("[HTTP PROXY] Cache hit for file: {}", file_hash);
-                return Some((cached.content.clone(), cached.mime_type.clone()));
-            } else {
-                println!("[HTTP PROXY] Cache expired for file: {}", file_hash);
-                self.file_cache.remove(file_hash);
+        match self.file_cache.get(file_hash) {
+            Some(cached) => {
+                if cached.expires_at > Instant::now() {
+                    println!("[HTTP PROXY] Cache hit for file: {}", file_hash);
+                    return Some((cached.content.clone(), cached.mime_type.clone()));
+                } else {
+                    println!("[HTTP PROXY] Cache expired for file: {}", file_hash);
+                    let file_hash = file_hash.to_string();
+                    let cache = self.file_cache.clone();
+                    
+                    tokio::spawn(async move {
+                        if cache.remove_if(&file_hash, |_, _| true).is_some() {
+                            println!("[HTTP PROXY] Cache removed for file: {}", file_hash);
+                        } else {
+                            println!("[HTTP PROXY] Failed to remove cache for file: {}", file_hash);
+                        }
+                    });
+                }
             }
-        } else {
-            println!("[HTTP PROXY] Cache miss for file: {}", file_hash);
+            None => {
+                println!("[HTTP PROXY] Cache miss for file: {}", file_hash);
+            }
         }
         None
     }
