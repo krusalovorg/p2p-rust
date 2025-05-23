@@ -44,7 +44,7 @@ pub struct PeerUploadFile {
     pub peer_id: String,
     pub file_hash: String,
     pub filename: String,
-    pub contents: String,
+    pub contents: Vec<u8>,
     pub token: String,
     pub mime: String,
     pub public: bool,
@@ -95,7 +95,7 @@ pub struct ProxyMessage {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct FileData {
     pub filename: String,
-    pub contents: String,
+    pub contents: Vec<u8>,
     pub peer_id: String,
     pub hash_file: String,
     pub encrypted: bool,
@@ -207,7 +207,7 @@ pub struct PeerFileUpdate {
     pub peer_id: String,
     pub file_hash: String,
     pub filename: String,
-    pub contents: String,
+    pub contents: Vec<u8>,
     pub token: String,
     pub mime: String,
     pub public: bool,

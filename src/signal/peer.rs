@@ -1,12 +1,9 @@
-use async_std::sync::Mutex;
 use dashmap::DashMap;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{split, AsyncReadExt, AsyncWriteExt}; // Добавляем split
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
-
-use crate::logger::{self, LOGGER}; // Добавляем mpsc
+use crate::logger::LOGGER;
 
 #[derive(Clone, Debug)]
 pub struct InfoPeer {

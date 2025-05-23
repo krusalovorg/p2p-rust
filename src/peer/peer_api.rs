@@ -208,9 +208,9 @@ impl PeerAPI {
                 content: encrypted_contents.0,
             })
             .unwrap();
-            (base64::encode(content.to_string().as_bytes()), true)
+            (content.into_bytes(), true)
         } else {
-            (base64::encode(compressed_contents), false)
+            (compressed_contents, false)
         };
 
         let my_peer_id = self
@@ -218,7 +218,7 @@ impl PeerAPI {
             .get_or_create_peer_id()
             .map_err(|e| UploadError::DatabaseError(e.to_string()))?;
 
-        let file_hash = hex::encode(Sha256::digest(final_content.to_string().as_bytes()));
+        let file_hash = hex::encode(Sha256::digest(&final_content));
         let mime = mime_guess::from_path(file_path.clone()).first_or_text_plain();
 
         let packet = TransportPacket {
@@ -681,9 +681,9 @@ impl PeerAPI {
                 content: encrypted_contents.0,
             })
             .map_err(|e| format!("Ошибка при сериализации: {}", e))?;
-            (base64::encode(content.to_string().as_bytes()), true)
+            (content.into_bytes(), true)
         } else {
-            (base64::encode(compressed_contents), false)
+            (compressed_contents, false)
         };
 
         let my_peer_id = self.db.get_or_create_peer_id()

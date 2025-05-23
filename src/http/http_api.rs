@@ -1,7 +1,7 @@
 use crate::db::P2PDatabase;
 use crate::packets::{
-    FragmentSearchRequest, PeerFileGet, PeerUploadFile, Protocol, TransportData, TransportPacket,
-    PeerFileUpdate,
+    FragmentSearchRequest, PeerFileGet, PeerFileUpdate, PeerUploadFile, Protocol, TransportData,
+    TransportPacket,
 };
 use bytes::Bytes;
 use chrono;
@@ -17,26 +17,12 @@ use mime_guess;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
+use super::api::{full, log, FileAccessRequest, FileCache, UpdateRequest, UploadRequest};
 
-const SHOW_LOGS: bool = false;
-
-fn log(message: &str) {
-    if SHOW_LOGS {
-        println!("{}", message);
-    }
-}
-
-#[derive(Clone, Debug)]
-struct CachedFile {
-    content: Vec<u8>,
-    mime_type: String,
-    expires_at: Instant,
-}
 
 #[derive(Clone, Debug)]
 pub struct HttpApi {
@@ -44,7 +30,7 @@ pub struct HttpApi {
     api_tx: mpsc::Sender<TransportPacket>,
     pending_responses: Arc<DashMap<String, oneshot::Sender<TransportPacket>>>,
     fragment_cache: Arc<DashMap<String, String>>,
-    file_cache: Arc<DashMap<String, CachedFile>>,
+    file_cache: Arc<FileCache>,
     port: Arc<Mutex<u16>>,
     public_ip: String,
     path_blobs: String,
@@ -55,33 +41,6 @@ struct PacketRequest {
     to: Option<String>,
     data: Option<TransportData>,
     protocol: Protocol,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct FileAccessRequest {
-    public: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct UploadRequest {
-    filename: String,
-    contents: String,
-    public: bool,
-    encrypted: bool,
-    compressed: bool,
-    auto_decompress: bool,
-    token: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct UpdateRequest {
-    file_hash: String,
-    contents: String,
-    public: bool,
-    encrypted: bool,
-    compressed: bool,
-    auto_decompress: bool,
-    token: String,
 }
 
 impl HttpApi {
@@ -96,10 +55,10 @@ impl HttpApi {
             api_tx,
             pending_responses: Arc::new(DashMap::new()),
             fragment_cache: Arc::new(DashMap::new()),
-            file_cache: Arc::new(DashMap::new()),
+            file_cache: Arc::new(FileCache::new()),
             port: Arc::new(Mutex::new(8080)),
             public_ip,
-            path_blobs: path_blobs,
+            path_blobs,
         }
     }
 
@@ -117,7 +76,10 @@ impl HttpApi {
     }
 
     pub async fn set_response(&self, request_id: String, response: TransportPacket) {
-        log(&format!("[HTTP API] Set response for request: {}", request_id));
+        log(&format!(
+            "[HTTP API] Set response for request: {}",
+            request_id
+        ));
         if let Some((_, sender)) = self.pending_responses.remove(&request_id) {
             let _ = sender.send(response);
         }
@@ -135,7 +97,11 @@ impl HttpApi {
                     log(&format!("[HTTP API] Listening on http://{}", addr).green());
                 }
                 Err(_) => {
-                    log(&format!("[HTTP API] Port {} is busy, trying {}", port, port + 1));
+                    log(&format!(
+                        "[HTTP API] Port {} is busy, trying {}",
+                        port,
+                        port + 1
+                    ));
                     port += 1;
                 }
             }
@@ -212,7 +178,7 @@ impl HttpApi {
         _req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
         let peer_id = self.db.get_or_create_peer_id().unwrap();
-        
+
         #[derive(Serialize)]
         struct NodeInfo {
             node_id: String,
@@ -311,7 +277,10 @@ impl HttpApi {
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
         let path = req.uri().path();
         let file_hash = path.strip_prefix("/api/file/").unwrap_or("");
-        log(&format!("[HTTP API] [DEBUG] Handling get file request for hash: {}", file_hash));
+        log(&format!(
+            "[HTTP API] [DEBUG] Handling get file request for hash: {}",
+            file_hash
+        ));
 
         if file_hash.is_empty() {
             log(&format!("[HTTP API] [DEBUG] Empty file hash received"));
@@ -332,7 +301,9 @@ impl HttpApi {
         let mut mime = None;
 
         if indentificator.len() == 64 {
-            log(&format!("[HTTP API] [DEBUG] Searching for fragments with hash length 64"));
+            log(&format!(
+                "[HTTP API] [DEBUG] Searching for fragments with hash length 64"
+            ));
 
             if let Some(cached_owner) = self.fragment_cache.get(&indentificator) {
                 log(&format!(
@@ -341,7 +312,9 @@ impl HttpApi {
                 ));
                 storage_peer_id = Some(cached_owner.clone());
             } else {
-                log(&format!("[HTTP API] [DEBUG] No cached owner found, searching in local storage"));
+                log(&format!(
+                    "[HTTP API] [DEBUG] No cached owner found, searching in local storage"
+                ));
                 if let Ok(fragments) = self
                     .db
                     .search_fragment_in_virtual_storage(&indentificator, None)
@@ -383,7 +356,10 @@ impl HttpApi {
                         self.pending_responses.insert(request_id.clone(), search_tx);
 
                         if let Err(e) = self.api_tx.send(search_packet).await {
-                            log(&format!("[HTTP API] [DEBUG] Failed to send search packet: {}", e));
+                            log(&format!(
+                                "[HTTP API] [DEBUG] Failed to send search packet: {}",
+                                e
+                            ));
                             return Ok(Response::builder()
                                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                                 .body(full(format!("Failed to send search packet: {}", e)))
@@ -427,8 +403,11 @@ impl HttpApi {
         let file_hash_clone = file_hash.clone();
         if file_hash.is_some() {
             let file_hash_str = file_hash.unwrap();
-            log(&format!("[HTTP API] [DEBUG] Checking file cache for hash: {}", file_hash_str));
-            if let Some((cached_content, cached_mime)) = self.get_cached_file(&file_hash_str) {
+            log(&format!(
+                "[HTTP API] [DEBUG] Checking file cache for hash: {}",
+                file_hash_str
+            ));
+            if let Some((cached_content, cached_mime)) = self.file_cache.get_cached_file(&file_hash_str) {
                 log(&format!(
                     "[HTTP API] [DEBUG] Serving file from cache: {}",
                     file_hash_str
@@ -454,7 +433,10 @@ impl HttpApi {
                 log(&format!("[HTTP API] [DEBUG] File path: {}", file_path));
 
                 if !std::path::Path::new(&file_path).exists() {
-                    log(&format!("[HTTP API] [DEBUG] File not found at path: {}", file_path));
+                    log(&format!(
+                        "[HTTP API] [DEBUG] File not found at path: {}",
+                        file_path
+                    ));
                     return Ok(Response::builder()
                         .status(hyper::StatusCode::NOT_FOUND)
                         .header("Access-Control-Allow-Origin", "*")
@@ -484,7 +466,9 @@ impl HttpApi {
             }
         }
 
-        log(&format!("[HTTP API] [DEBUG] Initiating file request from network"));
+        log(&format!(
+            "[HTTP API] [DEBUG] Initiating file request from network"
+        ));
         let (tx, rx) = oneshot::channel();
         self.pending_responses.insert(request_id.clone(), tx);
 
@@ -501,10 +485,15 @@ impl HttpApi {
             uuid: request_id.clone(),
             nodes: vec![],
         };
-        log(&format!("[HTTP API] [DEBUG] Sending get_file packet: {:?}", packet));
+        log(&format!(
+            "[HTTP API] [DEBUG] Sending get_file packet: {:?}",
+            packet
+        ));
 
         if self.api_tx.is_closed() {
-            log(&format!("[HTTP API] [DEBUG] Channel is closed, attempting to reconnect..."));
+            log(&format!(
+                "[HTTP API] [DEBUG] Channel is closed, attempting to reconnect..."
+            ));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
                 .header("Access-Control-Allow-Origin", "*")
@@ -515,7 +504,10 @@ impl HttpApi {
         }
 
         if let Err(e) = self.api_tx.send(packet).await {
-            log(&format!("[HTTP API] [DEBUG] Failed to send get_file packet: {}", e));
+            log(&format!(
+                "[HTTP API] [DEBUG] Failed to send get_file packet: {}",
+                e
+            ));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                 .header("Access-Control-Allow-Origin", "*")
@@ -528,10 +520,13 @@ impl HttpApi {
         log(&format!("[HTTP API] [DEBUG] Waiting for file response"));
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(response)) => {
-                log(&format!("[HTTP API] [DEBUG] File response received: {:?}", response));
+                log(&format!(
+                    "[HTTP API] [DEBUG] File response received: {:?}",
+                    response
+                ));
                 if let Some(TransportData::FileData(file_data)) = response.data {
                     let file_content = base64::decode(&file_data.contents).unwrap();
-                    self.cache_file(
+                    self.file_cache.cache_file(
                         file_hash_clone.clone().unwrap_or(indentificator.clone()),
                         file_content.clone(),
                         file_data.mime.clone(),
@@ -601,39 +596,138 @@ impl HttpApi {
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
-        let whole_body = req.collect().await?.to_bytes();
-        log(&format!("[HTTP API] Received upload request, body length: {} bytes", whole_body.len()));
-        
-        let upload_request: UploadRequest = match serde_json::from_slice::<UploadRequest>(&whole_body) {
-            Ok(r) => {
-                log(&format!("[HTTP API] Successfully parsed upload request for file: {}", r.filename));
-                r
-            },
-            Err(e) => {
-                log(&format!("[HTTP API] Failed to parse upload request: {}", e));
-                return Ok(Response::builder()
-                    .status(hyper::StatusCode::BAD_REQUEST)
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "Content-Type")
-                    .body(full(format!("Invalid request format: {}", e)))
-                    .unwrap());
-            }
-        };
+        let content_type = req
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        let (filename, contents, public, encrypted, compressed, auto_decompress, token) =
+            if content_type.starts_with("multipart/form-data") {
+                let boundary = match content_type.split("boundary=").nth(1) {
+                    Some(b) => b,
+                    None => {
+                        return Ok(Response::builder()
+                            .status(hyper::StatusCode::BAD_REQUEST)
+                            .body(full("Missing boundary in multipart request"))
+                            .unwrap());
+                    }
+                };
+
+                let boundary_bytes = format!("--{}", boundary).into_bytes();
+                let whole_body = req.collect().await?.to_bytes();
+                let mut filename = String::new();
+                let mut contents = String::new();
+                let mut public = true;
+                let mut encrypted = false;
+                let mut compressed = false;
+                let mut auto_decompress = false;
+                let mut token = String::new();
+
+                let parts = whole_body.split_inclusive(|b| boundary_bytes.contains(b));
+                for part in parts {
+                    if part.is_empty() || part == b"--\r\n" {
+                        continue;
+                    }
+
+                    let mut headers = Vec::new();
+                    let mut content = Vec::new();
+                    let mut is_content = false;
+
+                    for line in part.split(|&b| b == b'\n') {
+                        if line == b"\r" {
+                            is_content = true;
+                            continue;
+                        }
+                        if !is_content {
+                            headers.push(line);
+                        } else {
+                            content.extend_from_slice(line);
+                        }
+                    }
+
+                    let content_disposition = headers
+                        .iter()
+                        .find(|h| h.starts_with(b"Content-Disposition:"))
+                        .and_then(|h| std::str::from_utf8(h).ok())
+                        .unwrap_or("");
+
+                    if content_disposition.contains("name=\"file\"") {
+                        let filename_start =
+                            content_disposition.find("filename=\"").unwrap_or(0) + 10;
+                        let filename_end = content_disposition[filename_start..]
+                            .find("\"")
+                            .unwrap_or(0)
+                            + filename_start;
+                        filename = content_disposition[filename_start..filename_end].to_string();
+                        contents = base64::encode(&content);
+                    } else if content_disposition.contains("name=\"public\"") {
+                        public = std::str::from_utf8(&content).unwrap_or("true").trim() == "true";
+                    } else if content_disposition.contains("name=\"encrypted\"") {
+                        encrypted =
+                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+                    } else if content_disposition.contains("name=\"compressed\"") {
+                        compressed =
+                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+                    } else if content_disposition.contains("name=\"auto_decompress\"") {
+                        auto_decompress =
+                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+                    } else if content_disposition.contains("name=\"token\"") {
+                        token = std::str::from_utf8(&content)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                    }
+                }
+
+                (
+                    filename,
+                    contents,
+                    public,
+                    encrypted,
+                    compressed,
+                    auto_decompress,
+                    token,
+                )
+            } else {
+                let whole_body = req.collect().await?.to_bytes();
+                let upload_request: UploadRequest = match serde_json::from_slice(&whole_body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(Response::builder()
+                            .status(hyper::StatusCode::BAD_REQUEST)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                            .header("Access-Control-Allow-Headers", "Content-Type")
+                            .body(full(format!("Invalid request format: {}", e)))
+                            .unwrap());
+                    }
+                };
+                (
+                    upload_request.filename,
+                    upload_request.contents,
+                    upload_request.public,
+                    upload_request.encrypted,
+                    upload_request.compressed,
+                    upload_request.auto_decompress,
+                    upload_request.token,
+                )
+            };
 
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.pending_responses.insert(request_id.clone(), tx);
 
         let my_peer_id = self.db.get_or_create_peer_id().unwrap();
-        let file_hash = hex::encode(Sha256::digest(upload_request.contents.as_bytes()));
-        let mime = mime_guess::from_path(&upload_request.filename)
+        let file_hash = hex::encode(Sha256::digest(contents.as_bytes()));
+        let mime = mime_guess::from_path(&filename)
             .first_or_text_plain()
             .to_string();
 
-        log(&format!("[HTTP API] Processing file upload: filename={}, size={} bytes, mime={}, hash={}", 
-            upload_request.filename, 
-            upload_request.contents.len(),
+        log(&format!(
+            "[HTTP API] Processing file upload: filename={}, size={} bytes, mime={}, hash={}",
+            filename,
+            contents.len(),
             mime,
             file_hash
         ));
@@ -642,16 +736,16 @@ impl HttpApi {
             act: "save_file".to_string(),
             to: None,
             data: Some(TransportData::PeerUploadFile(PeerUploadFile {
-                filename: upload_request.filename,
-                contents: upload_request.contents,
+                filename,
+                contents: base64::decode(contents).unwrap(),
                 peer_id: my_peer_id.clone(),
-                token: upload_request.token,
+                token,
                 file_hash: file_hash.clone(),
                 mime,
-                public: upload_request.public,
-                encrypted: upload_request.encrypted,
-                compressed: upload_request.compressed,
-                auto_decompress: upload_request.auto_decompress,
+                public,
+                encrypted,
+                compressed,
+                auto_decompress,
             })),
             protocol: Protocol::TURN,
             peer_key: my_peer_id,
@@ -659,10 +753,16 @@ impl HttpApi {
             nodes: vec![],
         };
 
-        log(&format!("[HTTP API] Sending save_file packet with request_id: {}", request_id));
+        log(&format!(
+            "[HTTP API] Sending save_file packet with request_id: {}",
+            request_id
+        ));
 
         if let Err(e) = self.api_tx.send(packet).await {
-            log(&format!("[HTTP API] Failed to send save_file packet: {}", e));
+            log(&format!(
+                "[HTTP API] Failed to send save_file packet: {}",
+                e
+            ));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                 .header("Access-Control-Allow-Origin", "*")
@@ -675,7 +775,10 @@ impl HttpApi {
         log(&format!("[HTTP API] Waiting for save_file response..."));
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(_)) => {
-                log(&format!("[HTTP API] File successfully saved with hash: {}", file_hash));
+                log(&format!(
+                    "[HTTP API] File successfully saved with hash: {}",
+                    file_hash
+                ));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::OK)
                     .header("Content-Type", "application/json")
@@ -705,37 +808,134 @@ impl HttpApi {
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
-        let whole_body = req.collect().await?.to_bytes();
-        log(&format!("[HTTP API] Received update request, body length: {} bytes", whole_body.len()));
-        
-        let update_request: UpdateRequest = match serde_json::from_slice::<UpdateRequest>(&whole_body) {
-            Ok(r) => {
-                log(&format!("[HTTP API] Successfully parsed update request for file: {}", r.file_hash));
-                r
-            },
-            Err(e) => {
-                log(&format!("[HTTP API] Failed to parse update request: {}", e));
-                return Ok(Response::builder()
-                    .status(hyper::StatusCode::BAD_REQUEST)
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "Content-Type")
-                    .body(full(format!("Invalid request format: {}", e)))
-                    .unwrap());
-            }
-        };
+        let content_type = req
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        let (file_hash, contents, public, encrypted, compressed, auto_decompress, token) =
+            if content_type.starts_with("multipart/form-data") {
+                let boundary = match content_type.split("boundary=").nth(1) {
+                    Some(b) => b,
+                    None => {
+                        return Ok(Response::builder()
+                            .status(hyper::StatusCode::BAD_REQUEST)
+                            .body(full("Missing boundary in multipart request"))
+                            .unwrap());
+                    }
+                };
+
+                let boundary_bytes = format!("--{}", boundary).into_bytes();
+                let whole_body = req.collect().await?.to_bytes();
+                let mut file_hash = String::new();
+                let mut contents = Vec::new();
+                let mut public = true;
+                let mut encrypted = false;
+                let mut compressed = false;
+                let mut auto_decompress = false;
+                let mut token = String::new();
+
+                let parts = whole_body.split_inclusive(|b| boundary_bytes.contains(b));
+                for part in parts {
+                    if part.is_empty() || part == b"--\r\n" {
+                        continue;
+                    }
+
+                    let mut headers = Vec::new();
+                    let mut content = Vec::new();
+                    let mut is_content = false;
+
+                    for line in part.split(|&b| b == b'\n') {
+                        if line == b"\r" {
+                            is_content = true;
+                            continue;
+                        }
+                        if !is_content {
+                            headers.push(line);
+                        } else {
+                            content.extend_from_slice(line);
+                        }
+                    }
+
+                    let content_disposition = headers
+                        .iter()
+                        .find(|h| h.starts_with(b"Content-Disposition:"))
+                        .and_then(|h| std::str::from_utf8(h).ok())
+                        .unwrap_or("");
+
+                    if content_disposition.contains("name=\"file\"") {
+                        contents = content;
+                    } else if content_disposition.contains("name=\"file_hash\"") {
+                        file_hash = std::str::from_utf8(&content)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                    } else if content_disposition.contains("name=\"public\"") {
+                        public = std::str::from_utf8(&content).unwrap_or("true").trim() == "true";
+                    } else if content_disposition.contains("name=\"encrypted\"") {
+                        encrypted =
+                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+                    } else if content_disposition.contains("name=\"compressed\"") {
+                        compressed =
+                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+                    } else if content_disposition.contains("name=\"auto_decompress\"") {
+                        auto_decompress =
+                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+                    } else if content_disposition.contains("name=\"token\"") {
+                        token = std::str::from_utf8(&content)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                    }
+                }
+
+                (
+                    file_hash,
+                    contents,
+                    public,
+                    encrypted,
+                    compressed,
+                    auto_decompress,
+                    token,
+                )
+            } else {
+                let whole_body = req.collect().await?.to_bytes();
+                let update_request: UpdateRequest = match serde_json::from_slice(&whole_body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(Response::builder()
+                            .status(hyper::StatusCode::BAD_REQUEST)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                            .header("Access-Control-Allow-Headers", "Content-Type")
+                            .body(full(format!("Invalid request format: {}", e)))
+                            .unwrap());
+                    }
+                };
+                (
+                    update_request.file_hash,
+                    update_request.contents,
+                    update_request.public,
+                    update_request.encrypted,
+                    update_request.compressed,
+                    update_request.auto_decompress,
+                    update_request.token,
+                )
+            };
 
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.pending_responses.insert(request_id.clone(), tx);
 
         let my_peer_id = self.db.get_or_create_peer_id().unwrap();
-        let new_file_hash = hex::encode(Sha256::digest(update_request.contents.as_bytes()));
+        let new_file_hash = hex::encode(Sha256::digest(&contents));
 
-        log(&format!("[HTTP API] Processing file update: old_hash={}, new_hash={}, size={} bytes", 
-            update_request.file_hash,
+        log(&format!(
+            "[HTTP API] Processing file update: old_hash={}, new_hash={}, size={} bytes",
+            file_hash,
             new_file_hash,
-            update_request.contents.len()
+            contents.len()
         ));
 
         let packet = TransportPacket {
@@ -743,15 +943,15 @@ impl HttpApi {
             to: None,
             data: Some(TransportData::PeerFileUpdate(PeerFileUpdate {
                 peer_id: my_peer_id.clone(),
-                file_hash: update_request.file_hash.clone(),
+                file_hash: file_hash.clone(),
                 filename: "".to_string(),
-                contents: update_request.contents,
-                token: update_request.token,
+                contents,
+                token,
                 mime: "".to_string(),
-                public: update_request.public,
-                encrypted: update_request.encrypted,
-                compressed: update_request.compressed,
-                auto_decompress: update_request.auto_decompress,
+                public,
+                encrypted,
+                compressed,
+                auto_decompress,
             })),
             protocol: Protocol::TURN,
             peer_key: my_peer_id,
@@ -759,10 +959,16 @@ impl HttpApi {
             nodes: vec![],
         };
 
-        log(&format!("[HTTP API] Sending update_file packet with request_id: {}", request_id));
+        log(&format!(
+            "[HTTP API] Sending update_file packet with request_id: {}",
+            request_id
+        ));
 
         if let Err(e) = self.api_tx.send(packet).await {
-            log(&format!("[HTTP API] Failed to send update_file packet: {}", e));
+            log(&format!(
+                "[HTTP API] Failed to send update_file packet: {}",
+                e
+            ));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                 .header("Access-Control-Allow-Origin", "*")
@@ -775,7 +981,10 @@ impl HttpApi {
         log(&format!("[HTTP API] Waiting for update_file response..."));
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(_)) => {
-                log(&format!("[HTTP API] File successfully updated with new hash: {}", new_file_hash));
+                log(&format!(
+                    "[HTTP API] File successfully updated with hash: {}",
+                    file_hash
+                ));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::OK)
                     .header("Content-Type", "application/json")
@@ -783,9 +992,8 @@ impl HttpApi {
                     .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                     .header("Access-Control-Allow-Headers", "Content-Type")
                     .body(full(format!(
-                        "{{\"status\":\"success\",\"old_hash\":\"{}\",\"new_hash\":\"{}\"}}",
-                        update_request.file_hash,
-                        new_file_hash
+                        "{{\"status\":\"success\",\"file_hash\":\"{}\"}}",
+                        file_hash
                     )))
                     .unwrap())
             }
@@ -946,28 +1154,4 @@ impl HttpApi {
                 .unwrap()),
         }
     }
-
-    fn cache_file(&self, file_hash: String, content: Vec<u8>, mime_type: String) {
-        let cached_file = CachedFile {
-            content,
-            mime_type,
-            expires_at: Instant::now() + Duration::from_secs(300), // 5 minutes
-        };
-        self.file_cache.insert(file_hash, cached_file);
-    }
-
-    fn get_cached_file(&self, file_hash: &str) -> Option<(Vec<u8>, String)> {
-        if let Some(cached) = self.file_cache.get(file_hash) {
-            if cached.expires_at > Instant::now() {
-                return Some((cached.content.clone(), cached.mime_type.clone()));
-            } else {
-                self.file_cache.remove(file_hash);
-            }
-        }
-        None
-    }
-}
-
-fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, Infallible> {
-    Full::new(chunk.into()).map_err(|_| unreachable!()).boxed()
 }

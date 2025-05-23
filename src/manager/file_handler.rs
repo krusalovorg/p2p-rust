@@ -51,15 +51,12 @@ impl ConnectionManager {
             (Some(token_info), token_hash, Some(validated_token))
         };
 
-        let contents = base64::decode(&data.contents)
-            .map_err(|e| format!("Ошибка при декодировании содержимого файла: {}", e))?;
-
         // Проверяем размер файла только для приватных файлов
         if let Some(validated_token) = validated_token {
-            if contents.len() as u64 > validated_token.file_size {
+            if data.contents.len() as u64 > validated_token.file_size {
                 return Err(format!(
                     "Размер файла ({}) превышает разрешенный размер в токене ({})",
-                    contents.len(),
+                    data.contents.len(),
                     validated_token.file_size
                 ));
             }
@@ -71,10 +68,10 @@ impl ConnectionManager {
             .await
             .map_err(|e| format!("Ошибка при получении свободного места: {:?}", e))?;
 
-        if free_space < contents.len() as u64 {
+        if free_space < data.contents.len() as u64 {
             return Err(format!(
                 "Недостаточно свободного места. Требуется: {}, Доступно: {}",
-                contents.len(),
+                data.contents.len(),
                 free_space
             ));
         }
@@ -89,10 +86,10 @@ impl ConnectionManager {
         let final_contents = if data.compressed && data.auto_decompress {
             println!("Распаковка сжатых данных...");
             self.db
-                .uncompress_data(&contents)
+                .uncompress_data(&data.contents)
                 .map_err(|e| format!("Ошибка распаковки: {}", e))?
         } else {
-            contents
+            data.contents
         };
 
         let path = format!("{}/{}", dir_path, data.file_hash);
@@ -263,7 +260,7 @@ impl ConnectionManager {
                 to: Some(from_uuid.clone()),
                 data: Some(TransportData::FileData(FileData {
                     filename: fragment.filename.clone().to_string(),
-                    contents: base64::encode(contents),
+                    contents,
                     peer_id: self.db.get_or_create_peer_id().unwrap(),
                     hash_file: fragment.file_hash.clone(),
                     encrypted: fragment.encrypted,
@@ -305,11 +302,8 @@ impl ConnectionManager {
         let path = format!("{}/{}", dir_path, data.filename);
         let mut file = File::create(path).await.unwrap();
 
-        let contents = base64::decode(data.contents).unwrap();
-        // println!("Contents: {:?}", contents);
-
         let final_contents = if data.encrypted {
-            let json_data: EncryptedData = serde_json::from_slice(&contents)
+            let json_data: EncryptedData = serde_json::from_slice(&data.contents)
                 .map_err(|e| format!("Ошибка десериализации зашифрованных данных: {}", e))?;
 
             let decrypted_contents = self
@@ -327,10 +321,10 @@ impl ConnectionManager {
         } else {
             if data.compressed && data.auto_decompress {
                 self.db
-                    .uncompress_data(&contents)
+                    .uncompress_data(&data.contents)
                     .map_err(|e| format!("Ошибка распаковки: {}", e))?
             } else {
-                contents
+                data.contents
             }
         };
 
@@ -593,8 +587,7 @@ impl ConnectionManager {
         }
 
         // Создаем новый файл
-        let contents = base64::decode(&data.contents)
-            .map_err(|e| format!("Ошибка при декодировании содержимого файла: {}", e))?;
+        let contents = data.contents;
 
         let final_contents = if data.compressed && data.auto_decompress {
             println!("Распаковка сжатых данных...");

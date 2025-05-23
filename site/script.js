@@ -20,18 +20,6 @@ const refreshGalleryBtn = document.getElementById('refresh-gallery-btn');
 // --- API Interaction Functions ---
 const URL_BASE = `${window.location.protocol}//${window.location.hostname}:8081`;
 
-async function fileToBase64(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => {
-            const base64String = reader.result.split(',')[1];
-            resolve(base64String);
-        };
-        reader.onerror = error => reject(error);
-    });
-}
-
 async function fetchCurrentNodeInfo() {
     try {
         const response = await fetch(`${URL_BASE}/api/info`);
@@ -50,12 +38,13 @@ async function fetchCurrentNodeInfo() {
 }
 
 async function handleUploadFile(file) {
-    const filename = file.name;
-    const contents = await fileToBase64(file);
-    const payload = {
-        filename: filename, contents: contents, public: true,
-        encrypted: false, compressed: false, auto_decompress: false, token: ""
-    };
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('public', 'true');
+    formData.append('encrypted', 'false');
+    formData.append('compressed', 'false');
+    formData.append('auto_decompress', 'false');
+    formData.append('token', '');
 
     uploadButton.disabled = true;
     uploadButtonText.textContent = 'Загрузка...';
@@ -65,8 +54,7 @@ async function handleUploadFile(file) {
     try {
         const response = await fetch(`${URL_BASE}/api/upload`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: formData
         });
         
         if (!response.ok) {
