@@ -4,9 +4,7 @@ use crate::crypto::crypto::generate_uuid;
 use crate::crypto::token::validate_signature_token;
 use crate::db::{P2PDatabase, Storage};
 use crate::packets::{
-    EncryptedData, FileData, FragmentMetadataSync, Message, PeerFileAccessChange, PeerFileDelete,
-    PeerFileGet, PeerFileMove, PeerFileSaved, PeerUploadFile, Protocol, TransportData,
-    TransportPacket,
+    EncryptedData, FileData, FragmentMetadataSync, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove, PeerFileSaved, PeerFileUpdate, PeerUploadFile, Protocol, TransportData, TransportPacket
 };
 use base64;
 use colored::*;
@@ -542,6 +540,103 @@ impl ConnectionManager {
                     "Файл {} успешно перемещен в {}",
                     data.file_hash, data.new_path
                 ),
+                nonce: None,
+            })),
+            protocol: Protocol::TURN,
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid(),
+            nodes: vec![],
+        };
+
+        connection.send_packet(packet_feedback).await
+    }
+
+    pub async fn handle_file_update(
+        &self,
+        data: PeerFileUpdate,
+        connection: &Connection,
+        from_uuid: String,
+    ) -> Result<(), String> {
+        let fragments = self
+            .db
+            .search_fragment_in_virtual_storage(&data.file_hash, None)
+            .map_err(|e| format!("Ошибка при поиске файла: {}", e))?;
+        let fragment = fragments
+            .first()
+            .ok_or_else(|| "Файл не найден".to_string())?;
+
+        if fragment.owner_key != from_uuid {
+            return Err("У вас нет прав на обновление этого файла".to_string());
+        }
+
+        let token_info = self
+            .db
+            .get_token(&data.peer_id)
+            .map_err(|e| format!("Ошибка при проверке токена в базе данных: {}", e))?
+            .ok_or_else(|| "Токен не найден в базе данных".to_string())?;
+
+        if token_info.token != data.token {
+            return Err("Токен в запросе не совпадает с токеном в базе данных".to_string());
+        }
+
+        let validated_token = validate_signature_token(data.token.clone(), &self.db)
+            .await
+            .map_err(|e| format!("Ошибка при проверке подписи токена: {}", e))?;
+
+        // Удаляем старый файл
+        let dir_path = format!("{}/blobs", self.db.path.as_str());
+        let old_path = format!("{}/{}", dir_path, data.file_hash);
+        if std::path::Path::new(&old_path).exists() {
+            tokio::fs::remove_file(&old_path)
+                .await
+                .map_err(|e| format!("Ошибка при удалении старого файла: {}", e))?;
+        }
+
+        // Создаем новый файл
+        let contents = base64::decode(&data.contents)
+            .map_err(|e| format!("Ошибка при декодировании содержимого файла: {}", e))?;
+
+        let final_contents = if data.compressed && data.auto_decompress {
+            println!("Распаковка сжатых данных...");
+            self.db
+                .uncompress_data(&contents)
+                .map_err(|e| format!("Ошибка распаковки: {}", e))?
+        } else {
+            contents
+        };
+
+        let new_path = format!("{}/{}", dir_path, data.file_hash);
+        let mut file = File::create(&new_path)
+            .await
+            .map_err(|e| format!("Ошибка при создании нового файла: {}", e))?;
+        file.write_all(&final_contents)
+            .await
+            .map_err(|e| format!("Ошибка при записи нового файла: {}", e))?;
+
+        // Обновляем информацию в базе данных
+        self.db
+            .update_fragment_metadata(
+                &data.file_hash,
+                data.filename.clone(),
+                data.mime.clone(),
+                data.encrypted,
+                data.compressed,
+                data.auto_decompress,
+                data.public,
+                final_contents.len() as u64,
+            )
+            .map_err(|e| format!("Ошибка при обновлении метаданных: {}", e))?;
+
+        println!(
+            "{}",
+            format!("[Peer] Файл {} успешно обновлен", data.file_hash).green()
+        );
+
+        let packet_feedback = TransportPacket {
+            act: "file_updated".to_string(),
+            to: Some(from_uuid),
+            data: Some(TransportData::Message(Message {
+                text: format!("Файл {} успешно обновлен", data.file_hash),
                 nonce: None,
             })),
             protocol: Protocol::TURN,

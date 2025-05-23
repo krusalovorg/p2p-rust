@@ -201,6 +201,7 @@ pub fn print_all_commands() {
         ("<message>", "Отправить сообщение пиру"),
         ("get <session_key>", "Получить файл от пира"),
         ("upload <file_path>", "Загрузить файл на пир"),
+        ("update <file_hash> <file_path>", "Обновить существующий файл"),
         ("reserve <size_in_bytes>", "Зарезервировать место на пирах"),
         ("valid_token <token>", "Проверить токен хранилища"),
         ("set_public <file_hash> <true/false>", "Изменить публичный доступ к файлу"),
@@ -233,6 +234,46 @@ pub async fn console_manager(
 
     if trimmed_input == "help" {
         print_all_commands();
+    } else if trimmed_input.starts_with("update ") {
+        let args: Vec<&str> = trimmed_input.split_whitespace().collect();
+        if args.len() != 3 {
+            println!("{}", "[Peer] Использование: update <file_hash> <путь_к_новому_файлу>".red());
+            return;
+        }
+        let file_hash = args[1].to_string();
+        let new_file_path = args[2].to_string();
+
+        println!("\n{}", "Настройка параметров обновления:".cyan());
+        
+        print!("{}", "Шифровать файл? (y/n): ".yellow());
+        io::stdout().flush().unwrap();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+        let encrypted = input.trim().to_lowercase() == "y";
+
+        print!("{}", "Сделать файл публичным? (y/n): ".yellow());
+        io::stdout().flush().unwrap();
+        input.clear();
+        std::io::stdin().read_line(&mut input).unwrap();
+        let public = input.trim().to_lowercase() == "y";
+
+        print!("{}", "Декомпрессировать файл после загрузки? (y/n): ".yellow());
+        io::stdout().flush().unwrap();
+        input.clear();
+        std::io::stdin().read_line(&mut input).unwrap();
+        let decompress = input.trim().to_lowercase() == "y";
+
+        println!("\n{}", "Параметры обновления:".cyan());
+        println!("{}", format!("Шифрование: {}", if encrypted { "включено" } else { "выключено" }).yellow());
+        println!("{}", format!("Публичный доступ: {}", if public { "да" } else { "нет" }).yellow());
+        println!("{}", format!("Декомпрессия: {}", if decompress { "да" } else { "нет" }).yellow());
+        println!();
+
+        if let Err(e) = api.update_file(file_hash, new_file_path, encrypted, public, decompress).await {
+            println!("{}", format!("[Peer] Ошибка при обновлении файла: {}", e).red());
+        } else {
+            println!("{}", "[Peer] Файл успешно обновлен".green());
+        }
     } else if trimmed_input == "virtual_storage" {
         if let Err(e) = api.virtual_storage_interactive().await {
             println!("{}", format!("[Peer] Ошибка в виртуальном хранилище: {}", e).red());

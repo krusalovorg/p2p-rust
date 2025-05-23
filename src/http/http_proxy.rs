@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::db::P2PDatabase;
 use crate::packets::{
     FragmentSearchRequest, Protocol, ProxyMessage, TransportData, TransportPacket,
@@ -72,7 +73,8 @@ impl HttpProxy {
     }
 
     pub async fn start(self: Arc<Self>) {
-        let mut port = 8080;
+        let config = Config::from_file("config.toml");
+        let mut port = config.proxy_port;
         let mut listener = None;
 
         while listener.is_none() {

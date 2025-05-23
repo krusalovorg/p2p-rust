@@ -387,4 +387,43 @@ impl P2PDatabase {
 
         Ok(tags.into_iter().collect())
     }
+
+    pub fn update_fragment_metadata(
+        &self,
+        file_hash: &str,
+        filename: String,
+        mime: String,
+        encrypted: bool,
+        compressed: bool,
+        auto_decompress: bool,
+        public: bool,
+        size: u64,
+    ) -> Result<(), Error> {
+        let db = self.db.lock().unwrap();
+        let tx = db.begin_write()?;
+
+        {
+            let mut table = tx.open_table(STORAGE_TABLE)?;
+            let fragment_data = if let Some(data) = table.get(file_hash)? {
+                let data = String::from_utf8(data.value().to_vec()).unwrap();
+                let mut fragment: Storage = serde_json::from_str(&data).unwrap();
+                
+                fragment.filename = filename;
+                fragment.mime = mime;
+                fragment.encrypted = encrypted;
+                fragment.compressed = compressed;
+                fragment.auto_decompress = auto_decompress;
+                fragment.public = public;
+                fragment.size = size;
+                
+                serde_json::to_string(&fragment).unwrap()
+            } else {
+                return Err(Error::Corrupted("Фрагмент не найден".into()));
+            };
+            table.insert(file_hash, fragment_data.as_bytes())?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
 }

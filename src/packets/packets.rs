@@ -202,6 +202,20 @@ pub struct FragmentSearchResponse {
     pub request_id: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PeerFileUpdate {
+    pub peer_id: String,
+    pub file_hash: String,
+    pub filename: String,
+    pub contents: String,
+    pub token: String,
+    pub mime: String,
+    pub public: bool,
+    pub encrypted: bool,
+    pub compressed: bool,
+    pub auto_decompress: bool,
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub enum TransportData {
     Message(Message),
@@ -228,6 +242,7 @@ pub enum TransportData {
     GetFragmentsMetadata(GetFragmentsMetadata),
     FragmentSearchRequest(FragmentSearchRequest),
     FragmentSearchResponse(FragmentSearchResponse),
+    PeerFileUpdate(PeerFileUpdate),
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]

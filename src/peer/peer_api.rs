@@ -4,7 +4,7 @@ use crate::crypto::token::get_metadata_from_token;
 use crate::db::P2PDatabase;
 use crate::manager::ConnectionManager::ConnectionManager;
 use crate::packets::{
-    EncryptedData, FragmentMetadata, FragmentMetadataSync, GetFragmentsMetadata, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove, PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol, SearchPathNode, StorageReservationRequest, StorageValidTokenRequest, TransportData, TransportPacket
+    EncryptedData, FragmentMetadata, FragmentMetadataSync, GetFragmentsMetadata, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove, PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol, SearchPathNode, StorageReservationRequest, StorageValidTokenRequest, TransportData, TransportPacket, PeerFileUpdate
 };
 use crate::tunnel::Tunnel;
 use colored::Colorize;
@@ -12,6 +12,7 @@ use hex;
 use mime_guess;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -613,5 +614,110 @@ impl PeerAPI {
             "[Peer] Отправка метаданных фрагментов на сигнальную ноду".cyan()
         );
         self.connection.send_packet(packet).await
+    }
+
+    pub async fn update_file(
+        &self,
+        file_hash: String,
+        new_file_path: String,
+        encrypt: bool,
+        public: bool,
+        auto_decompress: bool,
+    ) -> Result<(), String> {
+        println!("Обновление файла: {}", new_file_path);
+        let file_size = tokio::fs::metadata(&new_file_path)
+            .await
+            .map_err(|e| format!("Ошибка при получении метаданных файла: {}", e))?
+            .len();
+
+        println!("Размер файла: {}", file_size);
+
+        // Получаем информацию о текущем файле
+        let fragments = self.db.get_my_fragments()
+            .map_err(|e| format!("Ошибка при получении фрагментов: {}", e))?;
+        
+        let fragment = fragments.iter()
+            .find(|f| f.file_hash == file_hash)
+            .ok_or_else(|| format!("Файл с хешем {} не найден", file_hash))?;
+
+        let token_info = self.db.get_token(&fragment.storage_peer_key)
+            .map_err(|e| format!("Ошибка при получении токена: {}", e))?
+            .ok_or_else(|| "Токен не найден".to_string())?;
+
+        let used_space = self.db.get_token_used_space(&fragment.storage_peer_key)
+            .map_err(|e| format!("Ошибка при получении использованного места: {}", e))?;
+
+        if used_space + file_size > token_info.free_space && !public {
+            return Err(format!(
+                "Недостаточно места. Требуется: {}, Доступно: {}",
+                file_size,
+                token_info.free_space - used_space
+            ));
+        }
+
+        // Читаем содержимое нового файла
+        let mut file = tokio::fs::File::open(&new_file_path)
+            .await
+            .map_err(|e| format!("Ошибка при открытии файла: {}", e))?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)
+            .await
+            .map_err(|e| format!("Ошибка при чтении файла: {}", e))?;
+
+        // Сжимаем содержимое
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&contents)
+            .map_err(|e| format!("Ошибка при сжатии файла: {}", e))?;
+        let compressed_contents = encoder.finish()
+            .map_err(|e| format!("Ошибка при завершении сжатия: {}", e))?;
+
+        // Шифруем содержимое если нужно
+        let (final_content, encrypted) = if encrypt {
+            let encrypted_contents = self.db.encrypt_data(&compressed_contents)
+                .map_err(|e| format!("Ошибка при шифровании: {}", e))?;
+
+            let content = serde_json::to_string(&EncryptedData {
+                nonce: encrypted_contents.1,
+                content: encrypted_contents.0,
+            })
+            .map_err(|e| format!("Ошибка при сериализации: {}", e))?;
+            (base64::encode(content.to_string().as_bytes()), true)
+        } else {
+            (base64::encode(compressed_contents), false)
+        };
+
+        let my_peer_id = self.db.get_or_create_peer_id()
+            .map_err(|e| format!("Ошибка при получении peer_id: {}", e))?;
+
+        let mime = mime_guess::from_path(new_file_path.clone()).first_or_text_plain();
+
+        let packet = TransportPacket {
+            act: "update_file".to_string(),
+            to: Some(fragment.storage_peer_key.clone()),
+            data: Some(TransportData::PeerFileUpdate(PeerFileUpdate {
+                peer_id: my_peer_id.clone(),
+                file_hash: file_hash.clone(),
+                filename: fragment.filename.clone(),
+                contents: final_content,
+                token: token_info.token,
+                mime: mime.to_string(),
+                public,
+                encrypted,
+                compressed: true,
+                auto_decompress,
+            })),
+            protocol: Protocol::TURN,
+            peer_key: my_peer_id,
+            uuid: generate_uuid(),
+            nodes: vec![],
+        };
+
+        self.connection.send_packet(packet).await?;
+
+        // Обновляем информацию об использованном месте
+        self.db.update_token_used_space(&fragment.storage_peer_key, used_space + file_size)
+            .map_err(|e| format!("Ошибка при обновлении использованного места: {}", e))?;
+
+        Ok(())
     }
 }

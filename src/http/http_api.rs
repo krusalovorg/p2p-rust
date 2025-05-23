@@ -1,6 +1,7 @@
 use crate::db::P2PDatabase;
 use crate::packets::{
     FragmentSearchRequest, PeerFileGet, PeerUploadFile, Protocol, TransportData, TransportPacket,
+    PeerFileUpdate,
 };
 use bytes::Bytes;
 use chrono;
@@ -64,6 +65,17 @@ struct FileAccessRequest {
 #[derive(Debug, Serialize, Deserialize)]
 struct UploadRequest {
     filename: String,
+    contents: String,
+    public: bool,
+    encrypted: bool,
+    compressed: bool,
+    auto_decompress: bool,
+    token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateRequest {
+    file_hash: String,
     contents: String,
     public: bool,
     encrypted: bool,
@@ -179,6 +191,7 @@ impl HttpApi {
             }
             (&hyper::Method::GET, "/api/files") => self.handle_list_files(req).await,
             (&hyper::Method::POST, "/api/upload") => self.handle_upload_file(req).await,
+            (&hyper::Method::POST, "/api/update") => self.handle_update_file(req).await,
             (&hyper::Method::DELETE, path) if path.starts_with("/api/file/") => {
                 self.handle_delete_file(req).await
             }
@@ -677,6 +690,107 @@ impl HttpApi {
             }
             _ => {
                 log(&format!("[HTTP API] Save file request timed out"));
+                Ok(Response::builder()
+                    .status(hyper::StatusCode::GATEWAY_TIMEOUT)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type")
+                    .body(full("Request timeout"))
+                    .unwrap())
+            }
+        }
+    }
+
+    async fn handle_update_file(
+        &self,
+        req: Request<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
+        let whole_body = req.collect().await?.to_bytes();
+        log(&format!("[HTTP API] Received update request, body length: {} bytes", whole_body.len()));
+        
+        let update_request: UpdateRequest = match serde_json::from_slice::<UpdateRequest>(&whole_body) {
+            Ok(r) => {
+                log(&format!("[HTTP API] Successfully parsed update request for file: {}", r.file_hash));
+                r
+            },
+            Err(e) => {
+                log(&format!("[HTTP API] Failed to parse update request: {}", e));
+                return Ok(Response::builder()
+                    .status(hyper::StatusCode::BAD_REQUEST)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type")
+                    .body(full(format!("Invalid request format: {}", e)))
+                    .unwrap());
+            }
+        };
+
+        let request_id = Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.pending_responses.insert(request_id.clone(), tx);
+
+        let my_peer_id = self.db.get_or_create_peer_id().unwrap();
+        let new_file_hash = hex::encode(Sha256::digest(update_request.contents.as_bytes()));
+
+        log(&format!("[HTTP API] Processing file update: old_hash={}, new_hash={}, size={} bytes", 
+            update_request.file_hash,
+            new_file_hash,
+            update_request.contents.len()
+        ));
+
+        let packet = TransportPacket {
+            act: "update_file".to_string(),
+            to: None,
+            data: Some(TransportData::PeerFileUpdate(PeerFileUpdate {
+                peer_id: my_peer_id.clone(),
+                file_hash: update_request.file_hash.clone(),
+                filename: "".to_string(),
+                contents: update_request.contents,
+                token: update_request.token,
+                mime: "".to_string(),
+                public: update_request.public,
+                encrypted: update_request.encrypted,
+                compressed: update_request.compressed,
+                auto_decompress: update_request.auto_decompress,
+            })),
+            protocol: Protocol::TURN,
+            peer_key: my_peer_id,
+            uuid: request_id.clone(),
+            nodes: vec![],
+        };
+
+        log(&format!("[HTTP API] Sending update_file packet with request_id: {}", request_id));
+
+        if let Err(e) = self.api_tx.send(packet).await {
+            log(&format!("[HTTP API] Failed to send update_file packet: {}", e));
+            return Ok(Response::builder()
+                .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body(full(format!("Failed to send packet: {}", e)))
+                .unwrap());
+        }
+
+        log(&format!("[HTTP API] Waiting for update_file response..."));
+        match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
+            Ok(Ok(_)) => {
+                log(&format!("[HTTP API] File successfully updated with new hash: {}", new_file_hash));
+                Ok(Response::builder()
+                    .status(hyper::StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type")
+                    .body(full(format!(
+                        "{{\"status\":\"success\",\"old_hash\":\"{}\",\"new_hash\":\"{}\"}}",
+                        update_request.file_hash,
+                        new_file_hash
+                    )))
+                    .unwrap())
+            }
+            _ => {
+                log(&format!("[HTTP API] Update file request timed out"));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::GATEWAY_TIMEOUT)
                     .header("Access-Control-Allow-Origin", "*")

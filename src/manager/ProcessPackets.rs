@@ -92,6 +92,21 @@ impl ConnectionManager {
                                     let _ = connection.send_packet(packet_error).await;
                                 }
                             }
+                            TransportData::PeerFileUpdate(data) => {
+                                if let Err(e) = self
+                                    .handle_file_update(
+                                        data.clone(),
+                                        &connection,
+                                        from_peer_key.clone(),
+                                    )
+                                    .await
+                                {
+                                    LOGGER.error(&format!(
+                                        "Failed to handle file update: {}",
+                                        e
+                                    ));
+                                }
+                            }
                             TransportData::ProxyMessage(data) => {
                                 let _ = self
                                     .proxy_http_tx_reciever
