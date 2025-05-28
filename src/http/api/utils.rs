@@ -3,7 +3,7 @@ use http_body_util::{combinators::BoxBody, Full};
 use std::convert::Infallible;
 use http_body_util::BodyExt;
 
-pub const SHOW_LOGS: bool = false;
+pub const SHOW_LOGS: bool = true;
 
 pub fn log(message: &str) {
     if SHOW_LOGS {

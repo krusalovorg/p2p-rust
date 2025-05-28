@@ -38,6 +38,12 @@ async function fetchCurrentNodeInfo() {
 }
 
 async function handleUploadFile(file) {
+    console.log("[Frontend] Starting file upload:", {
+        name: file.name,
+        size: file.size,
+        type: file.type
+    });
+
     const formData = new FormData();
     formData.append('file', file);
     formData.append('public', 'true');
@@ -52,16 +58,21 @@ async function handleUploadFile(file) {
     uploadStatusEl.textContent = '';
 
     try {
+        console.log("[Frontend] Sending file to server...");
         const response = await fetch(`${URL_BASE}/api/upload`, {
             method: 'POST',
             body: formData
         });
         
+        console.log("[Frontend] Server response status:", response.status);
+        
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({ message: "Ошибка сервера" }));
             throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
         }
-        return await response.json();
+        const result = await response.json();
+        console.log("[Frontend] Upload successful:", result);
+        return result;
     } catch (error) {
         console.error("[Frontend] Upload error:", error);
         throw error;

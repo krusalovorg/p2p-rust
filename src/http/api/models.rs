@@ -16,7 +16,7 @@ pub struct FileAccessRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UploadRequest {
     pub filename: String,
-    pub contents: String,
+    pub contents: Vec<u8>,
     pub public: bool,
     pub encrypted: bool,
     pub compressed: bool,

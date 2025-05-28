@@ -4,9 +4,10 @@ use crate::crypto::crypto::generate_uuid;
 use crate::crypto::token::validate_signature_token;
 use crate::db::{P2PDatabase, Storage};
 use crate::packets::{
-    EncryptedData, FileData, FragmentMetadataSync, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove, PeerFileSaved, PeerFileUpdate, PeerUploadFile, Protocol, TransportData, TransportPacket
+    EncryptedData, FileData, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet,
+    PeerFileMove, PeerFileSaved, PeerFileUpdate, PeerUploadFile, Protocol, TransportData,
+    TransportPacket,
 };
-use base64;
 use colored::*;
 use hex;
 use serde_json;
@@ -51,13 +52,14 @@ impl ConnectionManager {
             (Some(token_info), token_hash, Some(validated_token))
         };
 
-        // Проверяем размер файла только для приватных файлов
-        if let Some(validated_token) = validated_token {
-            if data.contents.len() as u64 > validated_token.file_size {
+        let contents = data.contents;
+
+        if let Some(token) = validated_token {
+            if contents.len() as u64 > token.file_size {
                 return Err(format!(
                     "Размер файла ({}) превышает разрешенный размер в токене ({})",
-                    data.contents.len(),
-                    validated_token.file_size
+                    contents.len(),
+                    token.file_size
                 ));
             }
         }
@@ -68,10 +70,10 @@ impl ConnectionManager {
             .await
             .map_err(|e| format!("Ошибка при получении свободного места: {:?}", e))?;
 
-        if free_space < data.contents.len() as u64 {
+        if free_space < contents.len() as u64 {
             return Err(format!(
                 "Недостаточно свободного места. Требуется: {}, Доступно: {}",
-                data.contents.len(),
+                contents.len(),
                 free_space
             ));
         }
@@ -86,10 +88,10 @@ impl ConnectionManager {
         let final_contents = if data.compressed && data.auto_decompress {
             println!("Распаковка сжатых данных...");
             self.db
-                .uncompress_data(&data.contents)
+                .uncompress_data(&contents)
                 .map_err(|e| format!("Ошибка распаковки: {}", e))?
         } else {
-            data.contents
+            contents
         };
 
         let path = format!("{}/{}", dir_path, data.file_hash);

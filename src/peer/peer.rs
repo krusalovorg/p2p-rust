@@ -1,5 +1,5 @@
-use colored::*;
 use std::sync::Arc;
+use crate::logger;
 
 use crate::config::Config;
 use crate::connection::Connection;
@@ -41,9 +41,9 @@ impl Peer {
 
     pub async fn run(&self) {
         let peer_id = self.db.get_or_create_peer_id().unwrap();
-        println!("{}", format!("[Peer] Your UUID: {}", peer_id).yellow());
+        logger::info(&format!("[Peer] Your UUID: {}", peer_id));
 
-        println!("[Peer] Starting peer...");
+        logger::info("[Peer] Starting peer...");
 
         self.connection_manager.handle_incoming_packets().await;
     }

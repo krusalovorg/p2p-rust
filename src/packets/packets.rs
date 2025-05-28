@@ -84,8 +84,8 @@ pub struct Message {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ProxyMessage {
-    pub text: String,
-    pub nonce: String,
+    pub text: Vec<u8>,
+    pub nonce: [u8; 12],
     pub from_peer_id: String,
     pub end_peer_id: String,
     pub request_id: String,
@@ -216,10 +216,19 @@ pub struct PeerFileUpdate {
     pub auto_decompress: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct FileRequest {
+    pub file_hash: String,
+    pub request_id: String,
+    pub from_peer_id: String,
+    pub end_peer_id: String,
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub enum TransportData {
     Message(Message),
     ProxyMessage(ProxyMessage),
+    FileRequest(FileRequest),
     PeerInfo(PeerInfo),
     PeerWaitConnection(PeerWaitConnection),
     PeerFileGet(PeerFileGet),

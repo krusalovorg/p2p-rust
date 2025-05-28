@@ -1,24 +1,25 @@
 use crate::config::Config;
 use crate::db::P2PDatabase;
 use crate::packets::{
-    FragmentSearchRequest, Protocol, ProxyMessage, TransportData, TransportPacket,
+    FileRequest, FragmentSearchRequest, Protocol, ProxyMessage, TransportData, TransportPacket,
 };
 use bytes::Bytes;
 use colored::Colorize;
 use dashmap::DashMap;
+use flate2::read::{GzDecoder, GzEncoder};
+use flate2::Compression;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{body::Incoming, Request, Response};
 use hyper_util::rt::tokio::TokioIo;
+use std::io::{self, Read};
 use std::time::{Duration, Instant};
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
-use std::io::{self, Read};
-use flate2::read::{GzEncoder, GzDecoder};
-use flate2::Compression;
+use crate::logger;
 
 #[derive(Clone, Debug)]
 struct CachedFile {
@@ -31,7 +32,6 @@ struct CachedFile {
 pub struct HttpProxy {
     db: Arc<P2PDatabase>,
     proxy_tx: mpsc::Sender<TransportPacket>,
-    client_to_peer_mapping: Arc<DashMap<String, String>>,
     pending_responses: Arc<DashMap<String, oneshot::Sender<TransportPacket>>>,
     fragment_cache: Arc<DashMap<String, String>>,
     file_cache: Arc<DashMap<String, CachedFile>>,
@@ -47,7 +47,6 @@ impl HttpProxy {
         Self {
             db,
             proxy_tx,
-            client_to_peer_mapping: Arc::new(DashMap::new()),
             pending_responses: Arc::new(DashMap::new()),
             fragment_cache: Arc::new(DashMap::new()),
             file_cache: Arc::new(DashMap::new()),
@@ -55,18 +54,8 @@ impl HttpProxy {
         }
     }
 
-    pub async fn set_peer_for_client(&self, client_ip: String, peer_id: String) {
-        self.client_to_peer_mapping.insert(client_ip, peer_id);
-    }
-
-    pub async fn get_peer_for_client(&self, client_ip: &str) -> Option<String> {
-        self.client_to_peer_mapping
-            .get(client_ip)
-            .map(|v| v.clone())
-    }
-
     pub async fn set_response(&self, request_id: String, response: TransportPacket) {
-        println!("[HTTP Proxy] Set response for request: {}", request_id);
+        logger::info(&format!("[HTTP Proxy] Set response for request: {}", request_id));
         if let Some((_, sender)) = self.pending_responses.remove(&request_id) {
             let _ = sender.send(response);
         }
@@ -82,13 +71,10 @@ impl HttpProxy {
             match TcpListener::bind(addr).await {
                 Ok(l) => {
                     listener = Some(l);
-                    println!(
-                        "{}",
-                        format!("[HTTP Proxy] Listening on http://{}", addr).green()
-                    );
+                    logger::info(&format!("[HTTP Proxy] Listening on http://{}", addr));
                 }
                 Err(_) => {
-                    println!("[HTTP Proxy] Port {} is busy, trying {}", port, port + 1);
+                    logger::warning(&format!("[HTTP Proxy] Port {} is busy, trying {}", port, port + 1));
                     port += 1;
                 }
             }
@@ -103,14 +89,14 @@ impl HttpProxy {
                 stream.peer_addr().unwrap().ip().to_string(),
                 stream.peer_addr().unwrap().port()
             );
-            println!("[HTTP Proxy] Peer IP: {}", peer_ip);
+            logger::info(&format!("[HTTP Proxy] Peer IP: {}", peer_ip));
             let proxy = self.clone();
 
             tokio::spawn(async move {
                 let service = service_fn(move |req: Request<Incoming>| {
                     let proxy = proxy.clone();
                     let peer_ip = peer_ip.clone();
-                    println!("[HTTP Proxy] [thread] Peer IP: {}", peer_ip);
+                    logger::info(&format!("[HTTP Proxy] [thread] Peer IP: {}", peer_ip));
                     async move { proxy.handle(req, peer_ip).await }
                 });
 
@@ -118,103 +104,70 @@ impl HttpProxy {
                     .serve_connection(TokioIo::new(stream), service)
                     .await
                 {
-                    eprintln!("[HTTP Proxy] Connection error: {:?}", err);
+                    logger::error(&format!("[HTTP Proxy] Connection error: {:?}", err));
                 }
             });
         }
     }
 
     fn extract_peer_id(req: &Request<Incoming>) -> Option<String> {
-        println!("[HTTP Proxy] [DEBUG] Starting peer ID extraction");
+        logger::debug("[HTTP Proxy] Starting peer ID extraction");
 
         if let Some(host) = req.headers().get("host") {
             if let Ok(host_str) = host.to_str() {
-                println!("[HTTP Proxy] [DEBUG] Checking host header: {}", host_str);
+                logger::debug(&format!("[HTTP Proxy] Checking host header: {}", host_str));
                 if host_str.chars().all(|c| c.is_ascii_hexdigit()) {
-                    println!(
-                        "[HTTP Proxy] [DEBUG] Found valid peer ID in host: {}",
-                        host_str
-                    );
+                    logger::debug(&format!("[HTTP Proxy] Found valid peer ID in host: {}", host_str));
                     return Some(host_str.to_string());
                 }
             }
         }
 
         let path = req.uri().path();
-        println!("[HTTP Proxy] [DEBUG] Checking URI path: {}", path);
+        logger::debug(&format!("[HTTP Proxy] Checking URI path: {}", path));
 
         for segment in path.split('/') {
             if !segment.is_empty() && segment.chars().all(|c| c.is_ascii_hexdigit()) {
-                println!(
-                    "[HTTP Proxy] [DEBUG] Found valid peer ID in URI path: {}",
-                    segment
-                );
+                logger::debug(&format!("[HTTP Proxy] Found valid peer ID in URI path: {}", segment));
                 return Some(segment.to_string());
             }
         }
 
         if let Some(query) = req.uri().query() {
-            println!("[HTTP Proxy] [DEBUG] Checking query parameters: {}", query);
+            logger::debug(&format!("[HTTP Proxy] Checking query parameters: {}", query));
             for param in query.split('&') {
                 let parts: Vec<&str> = param.split('=').collect();
                 if parts.len() == 2 {
                     let value = parts[1];
                     if value.chars().all(|c| c.is_ascii_hexdigit()) {
-                        println!(
-                            "[HTTP Proxy] [DEBUG] Found valid peer ID in query: {}",
-                            value
-                        );
+                        logger::debug(&format!("[HTTP Proxy] Found valid peer ID in query: {}", value));
                         return Some(value.to_string());
                     }
                 }
             }
         }
 
-        println!("[HTTP Proxy] [DEBUG] No valid peer ID found in request");
+        logger::debug("[HTTP Proxy] No valid peer ID found in request");
         None
     }
 
-    async fn get_peer_id_from_request(&self, req: &Request<Incoming>, client_ip: &str) -> String {
-        println!(
-            "[HTTP Proxy] [DEBUG] Starting peer ID extraction for client IP: {}",
-            client_ip
-        );
+    async fn get_hash_file_from_request(&self, req: &Request<Incoming>, client_ip: &str) -> String {
+        logger::debug(&format!("[HTTP Proxy] Starting peer ID extraction for client IP: {}", client_ip));
         let mut peer_id = None;
 
         if peer_id.is_none() {
             if let Some(extracted) = Self::extract_peer_id(req) {
-                println!(
-                    "[HTTP Proxy] [DEBUG] Successfully extracted peer ID from request: {}",
-                    extracted
-                );
+                logger::debug(&format!("[HTTP Proxy] Successfully extracted peer ID from request: {}", extracted));
                 peer_id = Some(extracted);
             } else {
-                println!(
-                    "[HTTP Proxy] [DEBUG] No peer ID found in request, checking client mapping"
-                );
-                peer_id = self.get_peer_for_client(client_ip).await;
-                if let Some(id) = &peer_id {
-                    println!(
-                        "[HTTP Proxy] [DEBUG] Found peer ID in client mapping: {}",
-                        id
-                    );
-                }
+                logger::debug("[HTTP Proxy] No peer ID found in request, checking client mapping");
             }
         }
 
         let peer_id = peer_id.unwrap_or_else(|| {
-            println!("[HTTP Proxy] [DEBUG] No peer ID found, using empty string");
+            logger::debug("[HTTP Proxy] No peer ID found, using empty string");
             "".to_string()
         });
-
-        if !peer_id.is_empty() && peer_id.len() == 66 {
-            println!(
-                "[HTTP Proxy] [DEBUG] Setting peer ID {} for client {}",
-                peer_id, client_ip
-            );
-            self.set_peer_for_client(client_ip.to_string(), peer_id.clone())
-                .await;
-        }
 
         peer_id
     }
@@ -224,17 +177,16 @@ impl HttpProxy {
         req: Request<Incoming>,
         client_ip: String,
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
-        println!("[HTTP Proxy] Request Method: {}", req.method());
-        println!("[HTTP Proxy] Request URI: {}", req.uri());
-        println!("[HTTP Proxy] Request Headers:");
+        logger::info(&format!("[HTTP Proxy] Request Method: {}", req.method()));
+        logger::info(&format!("[HTTP Proxy] Request URI: {}", req.uri()));
+        logger::info("[HTTP Proxy] Request Headers:");
         for (name, value) in req.headers() {
-            println!("  {}: {}", name, value.to_str().unwrap_or("(invalid)"));
+            logger::info(&format!("  {}: {}", name, value.to_str().unwrap_or("(invalid)")));
         }
 
-        let mut peer_id = self.get_peer_id_from_request(&req, &client_ip).await;
-        println!("[HTTP Proxy] Peer ID: {}", peer_id);
+        let mut hash_file = self.get_hash_file_from_request(&req, &client_ip).await;
+        logger::info(&format!("[HTTP Proxy] Hash File: {}", hash_file));
 
-        let uri_path = req.uri().path().trim_matches('/').to_string();
         let mut request_str = String::new();
         request_str.push_str(&format!("{} {} HTTP/1.1\r\n", req.method(), req.uri()));
 
@@ -256,29 +208,30 @@ impl HttpProxy {
         let request_id = Uuid::new_v4().to_string();
         let mut this_peer_storage_file = false;
         let mut file_hash = None;
+        let mut peer_id = None;
         let mut mime = None;
 
-        let is_hash = (peer_id.len() == 64 || peer_id.len() == 66) && peer_id.chars().all(|c| c.is_ascii_hexdigit());
+        let is_hash = hash_file.len() == 64 && hash_file.chars().all(|c| c.is_ascii_hexdigit());
 
         if !is_hash {
-            println!("[HTTP Proxy] [ERROR] Invalid hash format or length. Expected 64 or 66 characters hex string");
+            logger::error("[HTTP Proxy] [ERROR] Invalid hash format or length. Expected 64 characters hex string");
             return Ok(Response::builder()
                 .status(hyper::StatusCode::BAD_REQUEST)
-                .body(full("Invalid hash format. Expected 64 or 66 characters hex string"))
+                .body(full(
+                    "Invalid hash format. Expected 64 characters hex string",
+                ))
                 .unwrap());
         }
 
-        println!("[HTTP Proxy] [DEBUG] Searching for fragments by hash");
+        logger::debug("[HTTP Proxy] [DEBUG] Searching for fragments by hash");
 
-        if let Some(cached_owner) = self.fragment_cache.get(&peer_id) {
-            println!(
-                "[HTTP Proxy] [DEBUG] Found cached owner for hash: {}",
-                cached_owner.clone()
-            );
-            peer_id = cached_owner.clone();
+        if let Some(cached_owner) = self.fragment_cache.get(&hash_file) {
+            logger::debug(&format!("[HTTP Proxy] [DEBUG] Found cached owner for hash: {}", cached_owner.clone()));
+            peer_id = Some(cached_owner.clone());
             this_peer_storage_file = *cached_owner == *self.db.get_or_create_peer_id().unwrap();
             if this_peer_storage_file {
-                if let Ok(fragments) = self.db.search_fragment_in_virtual_storage(&peer_id, None) {
+                if let Ok(fragments) = self.db.search_fragment_in_virtual_storage(&hash_file, None)
+                {
                     if let Some(fragment) = fragments.first() {
                         file_hash = Some(fragment.file_hash.clone());
                         mime = Some(fragment.mime.clone());
@@ -286,23 +239,25 @@ impl HttpProxy {
                 }
             }
         } else {
-            println!("[HTTP Proxy] [DEBUG] No cached owner found, searching in storage");
-            if let Ok(fragments) = self.db.search_fragment_in_virtual_storage(&peer_id, None) {
+            logger::debug("[HTTP Proxy] [DEBUG] No cached owner found, searching in storage");
+            if let Ok(fragments) = self.db.search_fragment_in_virtual_storage(&hash_file, None) {
                 if let Some(fragment) = fragments.first() {
-                    println!("[HTTP Proxy] [DEBUG] Found fragment in local storage");
-                    peer_id = fragment.storage_peer_key.clone();
+                    logger::debug("[HTTP Proxy] [DEBUG] Found fragment in local storage");
+                    peer_id = Some(fragment.storage_peer_key.clone());
                     this_peer_storage_file =
                         fragment.storage_peer_key == self.db.get_or_create_peer_id().unwrap();
                     file_hash = Some(fragment.file_hash.clone());
                     mime = Some(fragment.mime.clone());
                 } else {
-                    println!("[HTTP Proxy] [DEBUG] No fragment found locally, sending search request");
+                    logger::debug(
+                        "[HTTP Proxy] [DEBUG] No fragment found locally, sending search request"
+                    );
                     let search_packet = TransportPacket {
                         act: "search_fragments".to_string(),
                         to: None,
                         data: Some(TransportData::FragmentSearchRequest(
                             FragmentSearchRequest {
-                                query: peer_id.clone(),
+                                query: hash_file.clone(),
                                 request_id: request_id.clone(),
                             },
                         )),
@@ -315,35 +270,34 @@ impl HttpProxy {
                     let (search_tx, search_rx) = oneshot::channel();
                     self.pending_responses.insert(request_id.clone(), search_tx);
 
-                    println!("[HTTP Proxy] [DEBUG] Sending search packet");
+                    logger::debug("[HTTP Proxy] [DEBUG] Sending search packet");
                     self.proxy_tx.send(search_packet).await.unwrap();
-                    println!("[HTTP Proxy] [DEBUG] Search packet sent, waiting for response");
+                    logger::debug("[HTTP Proxy] [DEBUG] Search packet sent, waiting for response");
 
                     if let Ok(search_response) =
-                        tokio::time::timeout(tokio::time::Duration::from_secs(5), search_rx)
-                            .await
+                        tokio::time::timeout(tokio::time::Duration::from_secs(5), search_rx).await
                     {
-                        println!("[HTTP Proxy] [DEBUG] Got search response");
+                        logger::debug("[HTTP Proxy] [DEBUG] Got search response");
                         if let Ok(response_data) = search_response {
-                            println!("[HTTP Proxy] Search response: {:?}", response_data);
+                            logger::debug(&format!("[HTTP Proxy] Search response: {:?}", response_data));
                             if let Some(TransportData::FragmentSearchResponse(response)) =
                                 response_data.data
                             {
                                 for fragment in response.fragments {
-                                    if fragment.file_hash == peer_id {
-                                        println!("[HTTP Proxy] [DEBUG] Found matching fragment in search response");
+                                    if fragment.file_hash == hash_file {
+                                        logger::debug("[HTTP Proxy] [DEBUG] Found matching fragment in search response");
                                         self.fragment_cache.insert(
-                                            peer_id.clone(),
+                                            hash_file.clone(),
                                             fragment.storage_peer_key.clone(),
                                         );
-                                        peer_id = fragment.storage_peer_key.clone();
+                                        peer_id = Some(fragment.storage_peer_key.clone());
                                         break;
                                     }
                                 }
                             }
                         }
                     } else {
-                        println!("[HTTP Proxy] [DEBUG] Search response timeout");
+                        logger::debug("[HTTP Proxy] [DEBUG] Search response timeout");
                     }
                 }
             }
@@ -352,10 +306,10 @@ impl HttpProxy {
         let file_hash_clone = file_hash.clone();
         if file_hash.is_some() {
             let file_hash_str = file_hash.unwrap();
-            println!("[HTTP PROXY] Processing file request for hash: {}", file_hash_str);
-            
+            logger::info(&format!("[HTTP PROXY] Processing file request for hash: {}", file_hash_str));
+
             if let Some((cached_content, cached_mime)) = self.get_cached_file(&file_hash_str) {
-                println!("[HTTP PROXY] Serving file from cache: {}", file_hash_str);
+                logger::info(&format!("[HTTP PROXY] Serving file from cache: {}", file_hash_str));
 
                 let mut decoder = GzDecoder::new(&cached_content[..]);
                 let mut decompressed = Vec::new();
@@ -370,14 +324,14 @@ impl HttpProxy {
             }
 
             if this_peer_storage_file {
-                println!("[HTTP PROXY] File is stored locally, serving from disk");
+                logger::info("[HTTP PROXY] File is stored locally, serving from disk");
                 let file_hash_str = file_hash_clone.unwrap();
 
                 let file_path = format!("{}/{}", self.path_blobs, file_hash_str);
-                println!("[HTTP PROXY] File path: {}", file_path);
+                logger::info(&format!("[HTTP PROXY] File path: {}", file_path));
 
                 if !std::path::Path::new(&file_path).exists() {
-                    println!("[HTTP PROXY] File not found at path: {}", file_path);
+                    logger::info(&format!("[HTTP PROXY] File not found at path: {}", file_path));
                     return Ok(Response::builder()
                         .status(hyper::StatusCode::NOT_FOUND)
                         .body(full("File not found"))
@@ -391,12 +345,8 @@ impl HttpProxy {
                 let mut compressed = Vec::new();
                 encoder.read_to_end(&mut compressed).unwrap();
 
-                println!("[HTTP PROXY] Caching file with hash: {}", file_hash_str);
-                self.cache_file(
-                    file_hash_str.clone(),
-                    compressed.clone(),
-                    mime_type.clone(),
-                );
+                logger::info(&format!("[HTTP PROXY] Caching file with hash: {}", file_hash_str));
+                self.cache_file(file_hash_str.clone(), compressed.clone(), mime_type.clone());
 
                 return Ok(Response::builder()
                     .status(hyper::StatusCode::OK)
@@ -408,31 +358,18 @@ impl HttpProxy {
             }
         }
 
-        println!("[HTTP Proxy] [DEBUG] Preparing to send HTTP request packet");
+        logger::debug("[HTTP Proxy] [DEBUG] Preparing to send file request packet");
         let (tx, rx) = oneshot::channel();
         self.pending_responses.insert(request_id.clone(), tx);
 
-        let encrypted = match self.db.encrypt_message(request_str.as_bytes(), &peer_id) {
-            Ok(e) => e,
-            Err(_) => {
-                println!("[HTTP Proxy] [DEBUG] Encryption failed");
-                return Ok(Response::builder()
-                    .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(full("Encryption failed"))
-                    .unwrap());
-            }
-        };
-
         let packet = TransportPacket {
             act: "http_proxy_request".to_string(),
-            to: Some(peer_id.clone()),
-            data: Some(TransportData::ProxyMessage(ProxyMessage {
-                text: base64::encode(encrypted.0),
-                nonce: base64::encode(encrypted.1),
-                mime: "text/html".to_string(),
-                from_peer_id: self.db.get_or_create_peer_id().unwrap(),
-                end_peer_id: peer_id.clone(),
+            to: peer_id.clone(),
+            data: Some(TransportData::FileRequest(FileRequest {
+                file_hash: hash_file.clone(),
                 request_id: request_id.clone(),
+                from_peer_id: self.db.get_or_create_peer_id().unwrap(),
+                end_peer_id: peer_id.clone().unwrap_or_default(),
             })),
             protocol: Protocol::TURN,
             peer_key: self.db.get_or_create_peer_id().unwrap(),
@@ -440,52 +377,31 @@ impl HttpProxy {
             nodes: vec![],
         };
 
-        println!("[HTTP Proxy] [DEBUG] Sending HTTP request packet");
+        logger::debug("[HTTP Proxy] [DEBUG] Sending file request packet");
         self.proxy_tx.send(packet).await.unwrap();
-        println!("[HTTP Proxy] [DEBUG] HTTP request packet sent, waiting for response");
+        logger::debug("[HTTP Proxy] [DEBUG] File request packet sent, waiting for response");
 
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(packet)) => {
-                println!("[HTTP Proxy] [DEBUG] Got HTTP response packet");
+                logger::debug("[HTTP Proxy] [DEBUG] Got file response packet");
                 if let Some(TransportData::ProxyMessage(msg)) = packet.data {
-                    let file_content = match base64::decode(&msg.text) {
-                        Ok(content) => content,
-                        Err(_) => {
-                            return Ok(Response::builder()
-                                .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(full("Failed to decode file content"))
-                                .unwrap());
-                        }
-                    };
-
+                    let file_content = msg.text;
                     let mime_type = msg.mime.clone();
-                    let nonce_decoded = match base64::decode(&msg.nonce) {
-                        Ok(n) => {
-                            let mut nonce_array = [0u8; 12];
-                            nonce_array.copy_from_slice(&n[..12]);
-                            nonce_array
-                        }
+                    let nonce = msg.nonce;
+
+                    let decrypted = match self.db.decrypt_message(
+                        &file_content,
+                        nonce,
+                        &peer_id.unwrap_or_default(),
+                    ) {
+                        Ok(d) => d,
                         Err(_) => {
                             return Ok(Response::builder()
                                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(full("Failed to decode nonce"))
+                                .body(full("Failed to decrypt file content"))
                                 .unwrap());
                         }
                     };
-
-                    let decrypted =
-                        match self
-                            .db
-                            .decrypt_message(&file_content, nonce_decoded, &peer_id)
-                        {
-                            Ok(d) => d,
-                            Err(_) => {
-                                return Ok(Response::builder()
-                                    .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
-                                    .body(full("Failed to decrypt file content"))
-                                    .unwrap());
-                            }
-                        };
 
                     let mut decoder = GzDecoder::new(&decrypted[..]);
                     let mut decompressed = Vec::new();
@@ -512,7 +428,7 @@ impl HttpProxy {
                         .body(Full::new(Bytes::from(decompressed)).boxed())
                         .unwrap())
                 } else {
-                    println!("[HTTP Proxy] Received invalid packet data");
+                    logger::error("[HTTP Proxy] Received invalid packet data");
                     return Ok(Response::builder()
                         .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                         .body(full("Invalid packet data"))
@@ -527,45 +443,45 @@ impl HttpProxy {
     }
 
     fn cache_file(&self, file_hash: String, content: Vec<u8>, mime_type: String) {
-        println!("[HTTP PROXY] Caching file with hash: {}", file_hash);
+        logger::info(&format!("[HTTP PROXY] Caching file with hash: {}", file_hash));
         let cached_file = CachedFile {
             content,
             mime_type,
-            expires_at: Instant::now() + Duration::from_secs(60),//300
+            expires_at: Instant::now() + Duration::from_secs(60), //300
         };
-        
+
         let cache = self.file_cache.clone();
         let file_hash_clone = file_hash.clone();
-        
+
         tokio::spawn(async move {
             cache.insert(file_hash_clone, cached_file);
-            println!("[HTTP PROXY] File cached successfully: {}", file_hash);
+            logger::info(&format!("[HTTP PROXY] File cached successfully: {}", file_hash));
         });
     }
 
     fn get_cached_file(&self, file_hash: &str) -> Option<(Vec<u8>, String)> {
-        println!("[HTTP PROXY] Checking cache for file: {}", file_hash);
+        logger::debug(&format!("[HTTP PROXY] Checking cache for file: {}", file_hash));
         match self.file_cache.get(file_hash) {
             Some(cached) => {
                 if cached.expires_at > Instant::now() {
-                    println!("[HTTP PROXY] Cache hit for file: {}", file_hash);
+                    logger::debug(&format!("[HTTP PROXY] Cache hit for file: {}", file_hash));
                     return Some((cached.content.clone(), cached.mime_type.clone()));
                 } else {
-                    println!("[HTTP PROXY] Cache expired for file: {}", file_hash);
+                    logger::debug(&format!("[HTTP PROXY] Cache expired for file: {}", file_hash));
                     let file_hash = file_hash.to_string();
                     let cache = self.file_cache.clone();
-                    
+
                     tokio::spawn(async move {
                         if cache.remove_if(&file_hash, |_, _| true).is_some() {
-                            println!("[HTTP PROXY] Cache removed for file: {}", file_hash);
+                            logger::debug(&format!("[HTTP PROXY] Cache removed for file: {}", file_hash));
                         } else {
-                            println!("[HTTP PROXY] Failed to remove cache for file: {}", file_hash);
+                            logger::error(&format!("[HTTP PROXY] Failed to remove cache for file: {}", file_hash));
                         }
                     });
                 }
             }
             None => {
-                println!("[HTTP PROXY] Cache miss for file: {}", file_hash);
+                logger::debug(&format!("[HTTP PROXY] Cache miss for file: {}", file_hash));
             }
         }
         None

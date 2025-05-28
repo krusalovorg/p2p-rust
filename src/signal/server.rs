@@ -140,7 +140,9 @@ impl SignalServer {
         });
 
         if let Ok(mut servers_list) = SignalServersList::load_or_create() {
+            log(&format!("Servers list: {:?}", servers_list));
             for server_info in servers_list.servers.iter() {
+                log(&format!("Server info: {:?}", server_info));
                 if ((server_info.public_ip == "127.0.0.1"
                     && server_info.port != config.signal_server_port)
                     || server_info.public_ip != "127.0.0.1")
@@ -310,8 +312,7 @@ impl SignalServer {
             tokio::spawn(async move {
                 while let Some(packet) = message_rx.recv().await {
                     log(&format!(
-                        "[SignalServer] Received packet from signal server: {:?}",
-                        packet
+                        "[SignalServer] Received packet from signal server",
                     ));
                     self_clone.handle_signal_server_packet(packet).await;
                 }
@@ -365,7 +366,7 @@ impl SignalServer {
                         _ => {
                             log(&format!(
                                 "[SignalServer] Received unknown packet: {:?}",
-                                packet
+                                packet.act
                             ));
                             self.auto_send_packet(packet).await;
                         }
@@ -375,7 +376,7 @@ impl SignalServer {
             _ => {
                 log(&format!(
                     "[SignalServer] Received unknown packet: {:?}",
-                    packet
+                    packet.act
                 ));
                 self.auto_send_packet(packet).await;
             }
@@ -497,8 +498,8 @@ impl SignalServer {
 
     async fn handle_message(&self, server: &Arc<SignalServer>, peer: Arc<Peer>, message: String) {
         log(&format!(
-            "[SignalServer] Handling message from peer {}: {}",
-            peer.info.local_addr, message
+            "[SignalServer] Handling message from peer {}",
+            peer.info.local_addr
         ));
         let message: TransportPacket = match serde_json::from_str(&message) {
             Ok(msg) => msg,

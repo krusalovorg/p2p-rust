@@ -1,82 +1,127 @@
 use colored::*;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warning,
-    Error,
+static mut SHOW_DEBUG: bool = false;
+static mut SHOW_INFO: bool = true;
+static mut SHOW_WARNING: bool = true;
+static mut SHOW_ERROR: bool = true;
+
+pub fn set_debug(enabled: bool) {
+    unsafe { SHOW_DEBUG = enabled; }
 }
 
-pub struct Logger {
-    show_debug: bool,
-    show_info: bool,
-    show_warning: bool,
-    show_error: bool,
+pub fn set_info(enabled: bool) {
+    unsafe { SHOW_INFO = enabled; }
 }
 
-impl Logger {
-    pub fn new() -> Self {
-        Self {
-            show_debug: false,
-            show_info: true,
-            show_warning: true,
-            show_error: true,
-        }
-    }
+pub fn set_warning(enabled: bool) {
+    unsafe { SHOW_WARNING = enabled; }
+}
 
-    pub fn set_level(&mut self, level: LogLevel, enabled: bool) {
-        match level {
-            LogLevel::Debug => self.show_debug = enabled,
-            LogLevel::Info => self.show_info = enabled,
-            LogLevel::Warning => self.show_warning = enabled,
-            LogLevel::Error => self.show_error = enabled,
-        }
-    }
+pub fn set_error(enabled: bool) {
+    unsafe { SHOW_ERROR = enabled; }
+}
 
-    pub fn debug(&self, message: &str) {
-        if self.show_debug {
+pub fn debug(message: &str) {
+    unsafe {
+        if SHOW_DEBUG {
             println!("{}", format!("[DEBUG] {}", message).blue().bold());
         }
     }
+}
 
-    pub fn info(&self, message: &str) {
-        if self.show_info {
+pub fn info(message: &str) {
+    unsafe {
+        if SHOW_INFO {
             println!("{}", message);
         }
     }
+}
 
-    pub fn warning(&self, message: &str) {
-        if self.show_warning {
+pub fn warning(message: &str) {
+    unsafe {
+        if SHOW_WARNING {
             println!("{}", format!("[WARNING] {}", message).yellow().bold());
         }
     }
+}
 
-    pub fn error(&self, message: &str) {
-        if self.show_error {
+pub fn error(message: &str) {
+    unsafe {
+        if SHOW_ERROR {
             println!("{}", format!("[ERROR] {}", message).red().bold());
         }
     }
+}
 
-    pub fn peer(&self, message: &str) {
-        if self.show_info {
+pub fn peer(message: &str) {
+    unsafe {
+        if SHOW_INFO {
             println!("{}", format!("[PEER] {}", message).cyan());
         }
     }
+}
 
-    pub fn turn(&self, message: &str) {
-        if self.show_info {
+pub fn turn(message: &str) {
+    unsafe {
+        if SHOW_INFO {
             println!("{}", format!("[TURN] {}", message).green());
         }
     }
+}
 
-    pub fn storage(&self, message: &str) {
-        if self.show_info {
+pub fn storage(message: &str) {
+    unsafe {
+        if SHOW_INFO {
             println!("{}", format!("[STORAGE] {}", message).magenta());
         }
     }
 }
 
-lazy_static::lazy_static! {
-    pub static ref LOGGER: Logger = Logger::new();
+#[macro_export]
+macro_rules! debug {
+    ($($arg:tt)*) => {
+        $crate::logger::debug(&format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)*) => {
+        $crate::logger::info(&format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => {
+        $crate::logger::warning(&format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)*) => {
+        $crate::logger::error(&format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! peer {
+    ($($arg:tt)*) => {
+        $crate::logger::peer(&format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! turn {
+    ($($arg:tt)*) => {
+        $crate::logger::turn(&format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! storage {
+    ($($arg:tt)*) => {
+        $crate::logger::storage(&format!($($arg)*))
+    };
 } 

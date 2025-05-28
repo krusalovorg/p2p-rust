@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
-use crate::logger::LOGGER;
+use crate::logger;
 
 #[derive(Clone, Debug)]
 pub struct InfoPeer {
@@ -68,7 +68,7 @@ impl Peer {
 
         // Отправляем длину сообщения (4 байта)
         if let Err(e) = writer.write_all(&len_bytes).await {
-            LOGGER.debug(&format!(
+            logger::debug(&format!(
                 "Failed to send message length to peer {}: {}",
                 self.info.local_addr, e
             ));
@@ -77,12 +77,12 @@ impl Peer {
 
         // Отправляем само сообщение
         if let Err(e) = writer.write_all(message.as_bytes()).await {
-            LOGGER.debug(&format!(
+            logger::debug(&format!(
                 "Failed to send message to peer {}: {}",
                 self.info.local_addr, e
             ));
         } else {
-            LOGGER.debug(&format!(
+            logger::debug(&format!(
                 "[SendData] Message sent to peer {}: {}",
                 self.info.local_addr, message
             ));
@@ -98,10 +98,10 @@ impl Peer {
             Ok(_) => {}
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::ConnectionReset {
-                    LOGGER.debug(&format!("Peer {} disconnected", self.info.local_addr));
+                    logger::debug(&format!("Peer {} disconnected", self.info.local_addr));
                     return Err("Peer disconnected".to_string());
                 }
-                LOGGER.debug(&format!(
+                logger::debug(&format!(
                     "Error reading message length from peer {}: {}",
                     self.info.local_addr, e
                 ));
@@ -116,7 +116,7 @@ impl Peer {
         match reader.read_exact(&mut message_bytes).await {
             Ok(_) => {}
             Err(e) => {
-                LOGGER.debug(&format!(
+                logger::debug(&format!(
                     "Error reading message from peer {}: {}",
                     self.info.local_addr, e
                 ));
@@ -127,7 +127,7 @@ impl Peer {
         match String::from_utf8(message_bytes) {
             Ok(message) => Ok(message),
             Err(e) => {
-                LOGGER.debug(&format!(
+                logger::debug(&format!(
                     "Error converting message to string from peer {}: {}",
                     self.info.local_addr, e
                 ));

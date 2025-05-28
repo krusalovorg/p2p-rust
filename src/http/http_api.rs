@@ -1,3 +1,4 @@
+use super::api::{full, log, FileAccessRequest, FileCache, UpdateRequest, UploadRequest};
 use crate::db::P2PDatabase;
 use crate::packets::{
     FragmentSearchRequest, PeerFileGet, PeerFileUpdate, PeerUploadFile, Protocol, TransportData,
@@ -21,8 +22,7 @@ use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
-use super::api::{full, log, FileAccessRequest, FileCache, UpdateRequest, UploadRequest};
-
+use crate::logger;
 
 #[derive(Clone, Debug)]
 pub struct HttpApi {
@@ -76,10 +76,7 @@ impl HttpApi {
     }
 
     pub async fn set_response(&self, request_id: String, response: TransportPacket) {
-        log(&format!(
-            "[HTTP API] Set response for request: {}",
-            request_id
-        ));
+        logger::info(&format!("[HTTP API] Set response for request: {}", request_id));
         if let Some((_, sender)) = self.pending_responses.remove(&request_id) {
             let _ = sender.send(response);
         }
@@ -94,14 +91,10 @@ impl HttpApi {
             match TcpListener::bind(addr).await {
                 Ok(l) => {
                     listener = Some(l);
-                    log(&format!("[HTTP API] Listening on http://{}", addr).green());
+                    logger::info(&format!("[HTTP API] Listening on http://{}", addr));
                 }
                 Err(_) => {
-                    log(&format!(
-                        "[HTTP API] Port {} is busy, trying {}",
-                        port,
-                        port + 1
-                    ));
+                    logger::warning(&format!("[HTTP API] Port {} is busy, trying {}", port, port + 1));
                     port += 1;
                 }
             }
@@ -125,7 +118,7 @@ impl HttpApi {
                     .serve_connection(TokioIo::new(stream), service)
                     .await
                 {
-                    eprintln!("[HTTP API] Connection error: {:?}", err);
+                    logger::error(&format!("[HTTP API] Connection error: {:?}", err));
                 }
             });
         }
@@ -277,13 +270,10 @@ impl HttpApi {
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
         let path = req.uri().path();
         let file_hash = path.strip_prefix("/api/file/").unwrap_or("");
-        log(&format!(
-            "[HTTP API] [DEBUG] Handling get file request for hash: {}",
-            file_hash
-        ));
+        logger::debug(&format!("[HTTP API] [DEBUG] Handling get file request for hash: {}", file_hash));
 
         if file_hash.is_empty() {
-            log(&format!("[HTTP API] [DEBUG] Empty file hash received"));
+            logger::debug(&format!("[HTTP API] [DEBUG] Empty file hash received"));
             return Ok(Response::builder()
                 .status(hyper::StatusCode::BAD_REQUEST)
                 .header("Access-Control-Allow-Origin", "*")
@@ -301,18 +291,18 @@ impl HttpApi {
         let mut mime = None;
 
         if indentificator.len() == 64 {
-            log(&format!(
+            logger::debug(&format!(
                 "[HTTP API] [DEBUG] Searching for fragments with hash length 64"
             ));
 
             if let Some(cached_owner) = self.fragment_cache.get(&indentificator) {
-                log(&format!(
+                logger::debug(&format!(
                     "[HTTP API] [DEBUG] Found cached owner for hash: {}",
                     cached_owner.clone()
                 ));
                 storage_peer_id = Some(cached_owner.clone());
             } else {
-                log(&format!(
+                logger::debug(&format!(
                     "[HTTP API] [DEBUG] No cached owner found, searching in local storage"
                 ));
                 if let Ok(fragments) = self
@@ -320,7 +310,7 @@ impl HttpApi {
                     .search_fragment_in_virtual_storage(&indentificator, None)
                 {
                     if let Some(fragment) = fragments.first() {
-                        log(&format!(
+                        logger::debug(&format!(
                             "[HTTP API] [DEBUG] Found fragment in local storage: {:?}",
                             fragment
                         ));
@@ -331,12 +321,12 @@ impl HttpApi {
                             fragment.storage_peer_key == self.db.get_or_create_peer_id().unwrap();
                         file_hash = Some(fragment.file_hash.clone());
                         mime = Some(fragment.mime.clone());
-                        log(&format!(
+                        logger::debug(&format!(
                             "[HTTP API] [DEBUG] This peer storage file: {}",
                             this_peer_storage_file
                         ));
                     } else {
-                        log(&format!("[HTTP API] [DEBUG] No fragment found in local storage, initiating network search"));
+                        logger::debug(&format!("[HTTP API] [DEBUG] No fragment found in local storage, initiating network search"));
                         let search_packet = TransportPacket {
                             act: "search_fragments".to_string(),
                             to: None,
@@ -356,7 +346,7 @@ impl HttpApi {
                         self.pending_responses.insert(request_id.clone(), search_tx);
 
                         if let Err(e) = self.api_tx.send(search_packet).await {
-                            log(&format!(
+                            logger::debug(&format!(
                                 "[HTTP API] [DEBUG] Failed to send search packet: {}",
                                 e
                             ));
@@ -366,13 +356,13 @@ impl HttpApi {
                                 .unwrap());
                         }
 
-                        log(&format!("[HTTP API] [DEBUG] Waiting for search response"));
+                        logger::debug(&format!("[HTTP API] [DEBUG] Waiting for search response"));
                         if let Ok(search_response) =
                             tokio::time::timeout(tokio::time::Duration::from_secs(5), search_rx)
                                 .await
                         {
                             if let Ok(response_data) = search_response {
-                                log(&format!(
+                                logger::debug(&format!(
                                     "[HTTP API] [DEBUG] Search response received: {:?}",
                                     response_data
                                 ));
@@ -381,7 +371,7 @@ impl HttpApi {
                                 {
                                     for fragment in response.fragments {
                                         if fragment.file_hash == indentificator {
-                                            log(&format!("[HTTP API] [DEBUG] Found matching fragment in network search"));
+                                            logger::debug(&format!("[HTTP API] [DEBUG] Found matching fragment in network search"));
                                             self.fragment_cache.insert(
                                                 indentificator.clone(),
                                                 fragment.storage_peer_key.clone(),
@@ -394,7 +384,7 @@ impl HttpApi {
                                 }
                             }
                         } else {
-                            log(&format!("[HTTP API] [DEBUG] Search response timeout"));
+                            logger::debug(&format!("[HTTP API] [DEBUG] Search response timeout"));
                         }
                     }
                 }
@@ -403,12 +393,14 @@ impl HttpApi {
         let file_hash_clone = file_hash.clone();
         if file_hash.is_some() {
             let file_hash_str = file_hash.unwrap();
-            log(&format!(
+            logger::debug(&format!(
                 "[HTTP API] [DEBUG] Checking file cache for hash: {}",
                 file_hash_str
             ));
-            if let Some((cached_content, cached_mime)) = self.file_cache.get_cached_file(&file_hash_str) {
-                log(&format!(
+            if let Some((cached_content, cached_mime)) =
+                self.file_cache.get_cached_file(&file_hash_str)
+            {
+                logger::debug(&format!(
                     "[HTTP API] [DEBUG] Serving file from cache: {}",
                     file_hash_str
                 ));
@@ -425,15 +417,15 @@ impl HttpApi {
 
             if this_peer_storage_file {
                 let file_hash_str = file_hash_clone.unwrap();
-                log(&format!(
+                logger::debug(&format!(
                     "[HTTP API] [DEBUG] File is stored on this peer, reading from local storage"
                 ));
 
                 let file_path = format!("{}/{}", self.path_blobs, file_hash_str);
-                log(&format!("[HTTP API] [DEBUG] File path: {}", file_path));
+                logger::debug(&format!("[HTTP API] [DEBUG] File path: {}", file_path));
 
                 if !std::path::Path::new(&file_path).exists() {
-                    log(&format!(
+                    logger::debug(&format!(
                         "[HTTP API] [DEBUG] File not found at path: {}",
                         file_path
                     ));
@@ -448,7 +440,7 @@ impl HttpApi {
 
                 let file_content = std::fs::read(&file_path).unwrap();
                 let mime_type = mime.unwrap_or("application/octet-stream".to_string());
-                log(&format!(
+                logger::debug(&format!(
                     "[HTTP API] [DEBUG] File read successfully, size: {} bytes, mime: {}",
                     file_content.len(),
                     mime_type
@@ -466,7 +458,7 @@ impl HttpApi {
             }
         }
 
-        log(&format!(
+        logger::debug(&format!(
             "[HTTP API] [DEBUG] Initiating file request from network"
         ));
         let (tx, rx) = oneshot::channel();
@@ -485,13 +477,13 @@ impl HttpApi {
             uuid: request_id.clone(),
             nodes: vec![],
         };
-        log(&format!(
+        logger::debug(&format!(
             "[HTTP API] [DEBUG] Sending get_file packet: {:?}",
             packet
         ));
 
         if self.api_tx.is_closed() {
-            log(&format!(
+            logger::debug(&format!(
                 "[HTTP API] [DEBUG] Channel is closed, attempting to reconnect..."
             ));
             return Ok(Response::builder()
@@ -504,7 +496,7 @@ impl HttpApi {
         }
 
         if let Err(e) = self.api_tx.send(packet).await {
-            log(&format!(
+            logger::debug(&format!(
                 "[HTTP API] [DEBUG] Failed to send get_file packet: {}",
                 e
             ));
@@ -517,15 +509,15 @@ impl HttpApi {
                 .unwrap());
         }
 
-        log(&format!("[HTTP API] [DEBUG] Waiting for file response"));
+        logger::debug(&format!("[HTTP API] [DEBUG] Waiting for file response"));
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(response)) => {
-                log(&format!(
+                logger::debug(&format!(
                     "[HTTP API] [DEBUG] File response received: {:?}",
                     response
                 ));
                 if let Some(TransportData::FileData(file_data)) = response.data {
-                    let file_content = base64::decode(&file_data.contents).unwrap();
+                    let file_content = file_data.contents;
                     self.file_cache.cache_file(
                         file_hash_clone.clone().unwrap_or(indentificator.clone()),
                         file_content.clone(),
@@ -541,7 +533,7 @@ impl HttpApi {
                         .body(full(file_content))
                         .unwrap())
                 } else {
-                    log(&format!("[HTTP API] [DEBUG] Invalid response format"));
+                    logger::debug(&format!("[HTTP API] [DEBUG] Invalid response format"));
                     Ok(Response::builder()
                         .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
                         .header("Access-Control-Allow-Origin", "*")
@@ -552,7 +544,7 @@ impl HttpApi {
                 }
             }
             _ => {
-                log(&format!("[HTTP API] [DEBUG] File request timeout"));
+                logger::debug(&format!("[HTTP API] [DEBUG] File request timeout"));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::GATEWAY_TIMEOUT)
                     .header("Access-Control-Allow-Origin", "*")
@@ -602,129 +594,176 @@ impl HttpApi {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
 
-        let (filename, contents, public, encrypted, compressed, auto_decompress, token) =
-            if content_type.starts_with("multipart/form-data") {
-                let boundary = match content_type.split("boundary=").nth(1) {
-                    Some(b) => b,
-                    None => {
-                        return Ok(Response::builder()
-                            .status(hyper::StatusCode::BAD_REQUEST)
-                            .body(full("Missing boundary in multipart request"))
-                            .unwrap());
-                    }
-                };
+        if !content_type.starts_with("multipart/form-data") {
+            return Ok(Response::builder()
+                .status(hyper::StatusCode::BAD_REQUEST)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body(full("Only multipart/form-data is supported"))
+                .unwrap());
+        }
 
-                let boundary_bytes = format!("--{}", boundary).into_bytes();
-                let whole_body = req.collect().await?.to_bytes();
-                let mut filename = String::new();
-                let mut contents = String::new();
-                let mut public = true;
-                let mut encrypted = false;
-                let mut compressed = false;
-                let mut auto_decompress = false;
-                let mut token = String::new();
+        let boundary = match content_type.split("boundary=").nth(1) {
+            Some(b) => b,
+            None => {
+                return Ok(Response::builder()
+                    .status(hyper::StatusCode::BAD_REQUEST)
+                    .body(full("Missing boundary in multipart request"))
+                    .unwrap());
+            }
+        };
 
-                let parts = whole_body.split_inclusive(|b| boundary_bytes.contains(b));
-                for part in parts {
-                    if part.is_empty() || part == b"--\r\n" {
-                        continue;
-                    }
+        let boundary_bytes = format!("--{}", boundary).into_bytes();
+        let whole_body = req.collect().await?.to_bytes();
+        let mut filename = String::new();
+        let mut contents = Vec::new();
+        let mut public = true;
+        let mut encrypted = false;
+        let mut compressed = false;
+        let mut auto_decompress = false;
+        let mut token = String::new();
 
-                    let mut headers = Vec::new();
-                    let mut content = Vec::new();
-                    let mut is_content = false;
+        logger::debug(&format!(
+            "[HTTP API] Received request body size: {} bytes",
+            whole_body.len()
+        ));
 
-                    for line in part.split(|&b| b == b'\n') {
-                        if line == b"\r" {
-                            is_content = true;
-                            continue;
-                        }
-                        if !is_content {
-                            headers.push(line);
-                        } else {
-                            content.extend_from_slice(line);
-                        }
-                    }
+        // Разбиваем тело на части по boundary
+        let mut current_pos = 0;
+        while current_pos < whole_body.len() {
+            // Ищем начало следующей части
+            let mut part_start = None;
+            for i in current_pos..whole_body.len() {
+                if whole_body[i..].starts_with(&boundary_bytes) {
+                    part_start = Some(i);
+                    break;
+                }
+            }
 
-                    let content_disposition = headers
-                        .iter()
-                        .find(|h| h.starts_with(b"Content-Disposition:"))
-                        .and_then(|h| std::str::from_utf8(h).ok())
-                        .unwrap_or("");
+            if part_start.is_none() {
+                break;
+            }
 
-                    if content_disposition.contains("name=\"file\"") {
-                        let filename_start =
-                            content_disposition.find("filename=\"").unwrap_or(0) + 10;
-                        let filename_end = content_disposition[filename_start..]
-                            .find("\"")
-                            .unwrap_or(0)
-                            + filename_start;
-                        filename = content_disposition[filename_start..filename_end].to_string();
-                        contents = base64::encode(&content);
-                    } else if content_disposition.contains("name=\"public\"") {
-                        public = std::str::from_utf8(&content).unwrap_or("true").trim() == "true";
-                    } else if content_disposition.contains("name=\"encrypted\"") {
-                        encrypted =
-                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
-                    } else if content_disposition.contains("name=\"compressed\"") {
-                        compressed =
-                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
-                    } else if content_disposition.contains("name=\"auto_decompress\"") {
-                        auto_decompress =
-                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
-                    } else if content_disposition.contains("name=\"token\"") {
-                        token = std::str::from_utf8(&content)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
+            let part_start = part_start.unwrap();
+            if part_start > current_pos {
+                current_pos = part_start;
+            }
+
+            // Пропускаем boundary и \r\n
+            current_pos += boundary_bytes.len() + 2;
+
+            // Ищем конец заголовков
+            let mut header_end = None;
+            for i in current_pos..whole_body.len() {
+                if whole_body[i..].starts_with(b"\r\n\r\n") {
+                    header_end = Some(i + 4);
+                    break;
+                }
+            }
+
+            if header_end.is_none() {
+                break;
+            }
+
+            let header_end = header_end.unwrap();
+            let headers = &whole_body[current_pos..header_end];
+            current_pos = header_end;
+
+            // Ищем конец части
+            let mut part_end = None;
+            for i in current_pos..whole_body.len() {
+                if whole_body[i..].starts_with(&boundary_bytes) {
+                    part_end = Some(i);
+                    break;
+                }
+            }
+
+            if part_end.is_none() {
+                part_end = Some(whole_body.len());
+            }
+
+            let part_end = part_end.unwrap();
+            let content = &whole_body[current_pos..part_end];
+            current_pos = part_end;
+
+            // Парсим заголовки
+            let mut content_disposition = String::new();
+            for line in headers.split(|&b| b == b'\n') {
+                if line.starts_with(b"Content-Disposition:") {
+                    content_disposition = String::from_utf8_lossy(line).to_string();
+                    break;
+                }
+            }
+
+            logger::debug(&format!(
+                "[HTTP API] Processing part: disposition={}, content_length={}",
+                content_disposition,
+                content.len()
+            ));
+
+            if content_disposition.contains("name=\"file\"") {
+                if let Some(start) = content_disposition.find("filename=\"") {
+                    let start = start + 10;
+                    if let Some(end) = content_disposition[start..].find("\"") {
+                        filename = content_disposition[start..start + end].to_string();
                     }
                 }
-
-                (
+                contents = content.to_vec();
+                logger::debug(&format!(
+                    "[HTTP API] File part found: filename={}, size={}",
                     filename,
-                    contents,
-                    public,
-                    encrypted,
-                    compressed,
-                    auto_decompress,
-                    token,
-                )
-            } else {
-                let whole_body = req.collect().await?.to_bytes();
-                let upload_request: UploadRequest = match serde_json::from_slice(&whole_body) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return Ok(Response::builder()
-                            .status(hyper::StatusCode::BAD_REQUEST)
-                            .header("Access-Control-Allow-Origin", "*")
-                            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                            .header("Access-Control-Allow-Headers", "Content-Type")
-                            .body(full(format!("Invalid request format: {}", e)))
-                            .unwrap());
-                    }
-                };
-                (
-                    upload_request.filename,
-                    upload_request.contents,
-                    upload_request.public,
-                    upload_request.encrypted,
-                    upload_request.compressed,
-                    upload_request.auto_decompress,
-                    upload_request.token,
-                )
-            };
+                    contents.len()
+                ));
+            } else if content_disposition.contains("name=\"public\"") {
+                public = std::str::from_utf8(content).unwrap_or("true").trim() == "true";
+            } else if content_disposition.contains("name=\"encrypted\"") {
+                encrypted = std::str::from_utf8(content).unwrap_or("false").trim() == "true";
+            } else if content_disposition.contains("name=\"compressed\"") {
+                compressed = std::str::from_utf8(content).unwrap_or("false").trim() == "true";
+            } else if content_disposition.contains("name=\"auto_decompress\"") {
+                auto_decompress = std::str::from_utf8(content).unwrap_or("false").trim() == "true";
+            } else if content_disposition.contains("name=\"token\"") {
+                token = std::str::from_utf8(content)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+            }
+        }
+
+        if contents.is_empty() {
+            logger::debug("[HTTP API] No file content found in request");
+            return Ok(Response::builder()
+                .status(hyper::StatusCode::BAD_REQUEST)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body(full("No file content found in request"))
+                .unwrap());
+        }
+
+        if filename.is_empty() {
+            logger::debug("[HTTP API] No filename found in request");
+            return Ok(Response::builder()
+                .status(hyper::StatusCode::BAD_REQUEST)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body(full("No filename found in request"))
+                .unwrap());
+        }
 
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.pending_responses.insert(request_id.clone(), tx);
 
         let my_peer_id = self.db.get_or_create_peer_id().unwrap();
-        let file_hash = hex::encode(Sha256::digest(contents.as_bytes()));
+        let file_hash = hex::encode(Sha256::digest(&contents));
         let mime = mime_guess::from_path(&filename)
             .first_or_text_plain()
             .to_string();
 
-        log(&format!(
+        logger::debug(&format!(
             "[HTTP API] Processing file upload: filename={}, size={} bytes, mime={}, hash={}",
             filename,
             contents.len(),
@@ -737,7 +776,7 @@ impl HttpApi {
             to: None,
             data: Some(TransportData::PeerUploadFile(PeerUploadFile {
                 filename,
-                contents: base64::decode(contents).unwrap(),
+                contents,
                 peer_id: my_peer_id.clone(),
                 token,
                 file_hash: file_hash.clone(),
@@ -753,13 +792,13 @@ impl HttpApi {
             nodes: vec![],
         };
 
-        log(&format!(
+        logger::debug(&format!(
             "[HTTP API] Sending save_file packet with request_id: {}",
             request_id
         ));
 
         if let Err(e) = self.api_tx.send(packet).await {
-            log(&format!(
+            logger::debug(&format!(
                 "[HTTP API] Failed to send save_file packet: {}",
                 e
             ));
@@ -772,10 +811,10 @@ impl HttpApi {
                 .unwrap());
         }
 
-        log(&format!("[HTTP API] Waiting for save_file response..."));
+        logger::debug(&format!("[HTTP API] Waiting for save_file response..."));
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(_)) => {
-                log(&format!(
+                logger::debug(&format!(
                     "[HTTP API] File successfully saved with hash: {}",
                     file_hash
                 ));
@@ -792,7 +831,7 @@ impl HttpApi {
                     .unwrap())
             }
             _ => {
-                log(&format!("[HTTP API] Save file request timed out"));
+                logger::debug(&format!("[HTTP API] Save file request timed out"));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::GATEWAY_TIMEOUT)
                     .header("Access-Control-Allow-Origin", "*")
@@ -814,115 +853,104 @@ impl HttpApi {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
 
-        let (file_hash, contents, public, encrypted, compressed, auto_decompress, token) =
-            if content_type.starts_with("multipart/form-data") {
-                let boundary = match content_type.split("boundary=").nth(1) {
-                    Some(b) => b,
-                    None => {
-                        return Ok(Response::builder()
-                            .status(hyper::StatusCode::BAD_REQUEST)
-                            .body(full("Missing boundary in multipart request"))
-                            .unwrap());
-                    }
-                };
+        if !content_type.starts_with("multipart/form-data") {
+            return Ok(Response::builder()
+                .status(hyper::StatusCode::BAD_REQUEST)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body(full("Only multipart/form-data is supported"))
+                .unwrap());
+        }
 
-                let boundary_bytes = format!("--{}", boundary).into_bytes();
-                let whole_body = req.collect().await?.to_bytes();
-                let mut file_hash = String::new();
-                let mut contents = Vec::new();
-                let mut public = true;
-                let mut encrypted = false;
-                let mut compressed = false;
-                let mut auto_decompress = false;
-                let mut token = String::new();
+        let boundary = match content_type.split("boundary=").nth(1) {
+            Some(b) => b,
+            None => {
+                return Ok(Response::builder()
+                    .status(hyper::StatusCode::BAD_REQUEST)
+                    .body(full("Missing boundary in multipart request"))
+                    .unwrap());
+            }
+        };
 
-                let parts = whole_body.split_inclusive(|b| boundary_bytes.contains(b));
-                for part in parts {
-                    if part.is_empty() || part == b"--\r\n" {
-                        continue;
-                    }
+        let boundary_bytes = format!("--{}", boundary).into_bytes();
+        let whole_body = req.collect().await?.to_bytes();
+        let mut file_hash = String::new();
+        let mut contents = Vec::new();
+        let mut public = true;
+        let mut encrypted = false;
+        let mut compressed = false;
+        let mut auto_decompress = false;
+        let mut token = String::new();
 
-                    let mut headers = Vec::new();
-                    let mut content = Vec::new();
-                    let mut is_content = false;
+        let parts = whole_body.split(|&b| {
+            boundary_bytes.iter().any(|&boundary_byte| b == boundary_byte)
+        });
+        for part in parts {
+            if part.is_empty() || part == b"--\r\n" {
+                continue;
+            }
 
-                    for line in part.split(|&b| b == b'\n') {
-                        if line == b"\r" {
-                            is_content = true;
-                            continue;
-                        }
-                        if !is_content {
-                            headers.push(line);
-                        } else {
-                            content.extend_from_slice(line);
-                        }
-                    }
+            let mut headers = Vec::new();
+            let mut content = Vec::new();
+            let mut is_content = false;
 
-                    let content_disposition = headers
-                        .iter()
-                        .find(|h| h.starts_with(b"Content-Disposition:"))
-                        .and_then(|h| std::str::from_utf8(h).ok())
-                        .unwrap_or("");
-
-                    if content_disposition.contains("name=\"file\"") {
-                        contents = content;
-                    } else if content_disposition.contains("name=\"file_hash\"") {
-                        file_hash = std::str::from_utf8(&content)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                    } else if content_disposition.contains("name=\"public\"") {
-                        public = std::str::from_utf8(&content).unwrap_or("true").trim() == "true";
-                    } else if content_disposition.contains("name=\"encrypted\"") {
-                        encrypted =
-                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
-                    } else if content_disposition.contains("name=\"compressed\"") {
-                        compressed =
-                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
-                    } else if content_disposition.contains("name=\"auto_decompress\"") {
-                        auto_decompress =
-                            std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
-                    } else if content_disposition.contains("name=\"token\"") {
-                        token = std::str::from_utf8(&content)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                    }
+            let mut header_end = 0;
+            for (i, window) in part.windows(4).enumerate() {
+                if window == b"\r\n\r\n" {
+                    header_end = i + 4;
+                    break;
                 }
+            }
 
-                (
-                    file_hash,
-                    contents,
-                    public,
-                    encrypted,
-                    compressed,
-                    auto_decompress,
-                    token,
-                )
-            } else {
-                let whole_body = req.collect().await?.to_bytes();
-                let update_request: UpdateRequest = match serde_json::from_slice(&whole_body) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return Ok(Response::builder()
-                            .status(hyper::StatusCode::BAD_REQUEST)
-                            .header("Access-Control-Allow-Origin", "*")
-                            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                            .header("Access-Control-Allow-Headers", "Content-Type")
-                            .body(full(format!("Invalid request format: {}", e)))
-                            .unwrap());
-                    }
-                };
-                (
-                    update_request.file_hash,
-                    update_request.contents,
-                    update_request.public,
-                    update_request.encrypted,
-                    update_request.compressed,
-                    update_request.auto_decompress,
-                    update_request.token,
-                )
-            };
+            let header_slice = &part[..header_end];
+            for line in header_slice.split(|&b| b == b'\n') {
+                if !line.is_empty() && line != b"\r" {
+                    headers.push(line);
+                }
+            }
+
+            content = part[header_end..].to_vec();
+
+            // Удаляем завершающий \r\n если он есть
+            if content.ends_with(b"\r\n") {
+                content.truncate(content.len() - 2);
+            }
+
+            let content_disposition = headers
+                .iter()
+                .find(|h| h.starts_with(b"Content-Disposition:"))
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .unwrap_or("");
+
+            logger::debug(&format!(
+                "[HTTP API] Processing part: disposition={}, content_length={}",
+                content_disposition,
+                content.len()
+            ));
+
+            if content_disposition.contains("name=\"file\"") {
+                contents = content;
+            } else if content_disposition.contains("name=\"file_hash\"") {
+                file_hash = std::str::from_utf8(&content)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+            } else if content_disposition.contains("name=\"public\"") {
+                public = std::str::from_utf8(&content).unwrap_or("true").trim() == "true";
+            } else if content_disposition.contains("name=\"encrypted\"") {
+                encrypted = std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+            } else if content_disposition.contains("name=\"compressed\"") {
+                compressed = std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+            } else if content_disposition.contains("name=\"auto_decompress\"") {
+                auto_decompress = std::str::from_utf8(&content).unwrap_or("false").trim() == "true";
+            } else if content_disposition.contains("name=\"token\"") {
+                token = std::str::from_utf8(&content)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+            }
+        }
 
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
@@ -931,7 +959,7 @@ impl HttpApi {
         let my_peer_id = self.db.get_or_create_peer_id().unwrap();
         let new_file_hash = hex::encode(Sha256::digest(&contents));
 
-        log(&format!(
+        logger::debug(&format!(
             "[HTTP API] Processing file update: old_hash={}, new_hash={}, size={} bytes",
             file_hash,
             new_file_hash,
@@ -959,13 +987,13 @@ impl HttpApi {
             nodes: vec![],
         };
 
-        log(&format!(
+        logger::debug(&format!(
             "[HTTP API] Sending update_file packet with request_id: {}",
             request_id
         ));
 
         if let Err(e) = self.api_tx.send(packet).await {
-            log(&format!(
+            logger::debug(&format!(
                 "[HTTP API] Failed to send update_file packet: {}",
                 e
             ));
@@ -978,10 +1006,10 @@ impl HttpApi {
                 .unwrap());
         }
 
-        log(&format!("[HTTP API] Waiting for update_file response..."));
+        logger::debug(&format!("[HTTP API] Waiting for update_file response..."));
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(_)) => {
-                log(&format!(
+                logger::debug(&format!(
                     "[HTTP API] File successfully updated with hash: {}",
                     file_hash
                 ));
@@ -998,7 +1026,7 @@ impl HttpApi {
                     .unwrap())
             }
             _ => {
-                log(&format!("[HTTP API] Update file request timed out"));
+                logger::debug(&format!("[HTTP API] Update file request timed out"));
                 Ok(Response::builder()
                     .status(hyper::StatusCode::GATEWAY_TIMEOUT)
                     .header("Access-Control-Allow-Origin", "*")

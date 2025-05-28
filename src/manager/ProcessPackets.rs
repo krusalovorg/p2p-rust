@@ -1,7 +1,7 @@
 use super::ConnectionManager::ConnectionManager;
 use crate::crypto::crypto::generate_uuid;
 use crate::http::proxy::handle_http_proxy_response;
-use crate::logger::LOGGER;
+use crate::logger::{debug, error, peer, storage, turn};
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::{Message, Protocol, StorageToken, TransportData, TransportPacket};
 use crate::peer::turn_tunnel;
@@ -18,7 +18,7 @@ impl ConnectionManager {
     pub async fn handle_incoming_packets(&self) {
         let incoming_packet_rx = self.incoming_packet_rx.clone();
         let mut rx = incoming_packet_rx.lock().await;
-        LOGGER.debug("Starting to handle incoming packets...");
+        debug("Starting to handle incoming packets...");
         
         // Создаем семафор для ограничения количества одновременных задач
         let semaphore = Arc::new(Semaphore::new(32)); // Максимум 32 одновременных задачи
@@ -40,11 +40,11 @@ impl ConnectionManager {
                 // Очищаем завершенные задачи
                 while let Some(result) = tasks.next().await {
                     if let Err(e) = result {
-                        LOGGER.error(&format!("Task error: {}", e));
+                        error(&format!("Task error: {}", e));
                     }
                 }
             } else {
-                LOGGER.debug("No messages received, sleeping...");
+                debug("No messages received, sleeping...");
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
         }
@@ -54,7 +54,7 @@ impl ConnectionManager {
         match connection_type {
             ConnectionType::Signal(id) => {
                 if let Some(connection) = connection {
-                    LOGGER.debug(&format!("Received signal packet: {:?}", packet));
+                    debug(&format!("Received signal packet: {:?}", packet));
                     let from_peer_key = packet.peer_key.clone();
                     let packet_clone = packet.clone();
                     let protocol_connection = packet.protocol.clone();
@@ -74,7 +74,7 @@ impl ConnectionManager {
                                 {
                                     let formatted_error =
                                         format!("Failed to handle file upload: {}", e);
-                                    LOGGER.error(&formatted_error);
+                                    error(&formatted_error);
 
                                     let packet_error = TransportPacket {
                                         act: "message".to_string(),
@@ -101,7 +101,7 @@ impl ConnectionManager {
                                     )
                                     .await
                                 {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to handle file update: {}",
                                         e
                                     ));
@@ -131,7 +131,7 @@ impl ConnectionManager {
                                     )
                                     .await
                                 {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to handle storage reservation request: {}",
                                         e
                                     ));
@@ -146,7 +146,7 @@ impl ConnectionManager {
                                     )
                                     .await
                                 {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to handle storage valid token request: {}",
                                         e
                                     ));
@@ -162,7 +162,7 @@ impl ConnectionManager {
                                     )
                                     .await
                                 {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to handle file get: {}",
                                         e
                                     ));
@@ -171,7 +171,7 @@ impl ConnectionManager {
                             TransportData::FileData(data) => {
                                 let peer_id = data.peer_id.clone();
                                 if let Err(e) = self.handle_file_data(data.clone()).await {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to handle file data: {}",
                                         e
                                     ));
@@ -183,7 +183,7 @@ impl ConnectionManager {
                                             .db
                                             .update_token_free_space(&peer_id, free_space)
                                         {
-                                            LOGGER.error(&format!(
+                                            error(&format!(
                                                 "Failed to update token free space: {}",
                                                 e
                                             ));
@@ -200,7 +200,7 @@ impl ConnectionManager {
                                     )
                                     .await
                                 {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to handle file delete: {}",
                                         e
                                     ));
@@ -215,7 +215,7 @@ impl ConnectionManager {
                                     )
                                     .await
                                 {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to handle file move: {}",
                                         e
                                     ));
@@ -230,17 +230,17 @@ impl ConnectionManager {
                                     )
                                     .await
                                 {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to handle file access change: {}",
                                         e
                                     ));
                                 }
                             }
                             TransportData::StorageValidTokenResponse(response) => {
-                                LOGGER.storage("\n╔════════════════════════════════════════════════════════════╗");
-                                LOGGER.storage("║                    ВАЛИДАЦИЯ ТОКЕНА ХРАНИЛИЩА                  ║");
-                                LOGGER.storage("╠════════════════════════════════════════════════════════════╣");
-                                LOGGER.storage(&format!(
+                                storage("\n╔════════════════════════════════════════════════════════════╗");
+                                storage("║                    ВАЛИДАЦИЯ ТОКЕНА ХРАНИЛИЩА                  ║");
+                                storage("╠════════════════════════════════════════════════════════════╣");
+                                storage(&format!(
                                     "║ Статус: {} ║",
                                     if response.status {
                                         "✅ ТОКЕН ВАЛИДЕН"
@@ -248,21 +248,21 @@ impl ConnectionManager {
                                         "❌ ТОКЕН НЕВАЛИДЕН"
                                     }
                                 ));
-                                LOGGER.storage("╚════════════════════════════════════════════════════════════╝\n");
+                                storage("╚════════════════════════════════════════════════════════════╝\n");
                             }
                             TransportData::PeerSearchResponse(response) => {
-                                LOGGER.peer("\n╔════════════════════════════════════════════════════════════╗");
-                                LOGGER.peer("║                      РЕЗУЛЬТАТЫ ПОИСКА ПИРА                    ║");
-                                LOGGER.peer("╠════════════════════════════════════════════════════════════╣");
-                                LOGGER.peer(&format!(
+                                peer("\n╔════════════════════════════════════════════════════════════╗");
+                                peer("║                      РЕЗУЛЬТАТЫ ПОИСКА ПИРА                    ║");
+                                peer("╠════════════════════════════════════════════════════════════╣");
+                                peer(&format!(
                                     "║ {} ║",
                                     format!("Статус: {}", "✅ ПИР НАЙДЕН").yellow()
                                 ));
-                                LOGGER.peer(&format!(
+                                peer(&format!(
                                     "║ {} ║",
                                     format!("UUID пира: {}", response.peer_id).cyan()
                                 ));
-                                LOGGER.peer(&format!(
+                                peer(&format!(
                                     "║ {} ║",
                                     format!(
                                         "Адрес ноды: {}:{}",
@@ -270,43 +270,43 @@ impl ConnectionManager {
                                     )
                                     .cyan()
                                 ));
-                                LOGGER.peer(&format!(
+                                peer(&format!(
                                     "║ {} ║",
                                     format!("Прыжков: {}", response.hops).cyan()
                                 ));
-                                LOGGER.peer("╚════════════════════════════════════════════════════════════╝\n");
+                                peer("╚════════════════════════════════════════════════════════════╝\n");
                             }
                             TransportData::StorageReservationResponse(response) => {
-                                LOGGER.storage(&format!("\n{}", "=".repeat(80).yellow()));
-                                LOGGER.storage(&format!("{}", "ВНИМАНИЕ! ВЫ ПОЛУЧИЛИ УНИКАЛЬНЫЙ ТОКЕН ДЛЯ ХРАНЕНИЯ И ПОЛУЧЕНИЯ ДАННЫХ С P2P ПИРА".red().bold()));
-                                LOGGER.storage(&format!("{}", "ЕСЛИ ВЫ ПОТЕРЯЕТЕ КЛЮЧ ВЫ НЕ СМОЖЕТЕ ПОЛУЧИТЬ ДОСТУП К ДАННЫМ".red().bold()));
-                                LOGGER.storage(&format!("{}", "=".repeat(80).yellow()));
+                                storage(&format!("\n{}", "=".repeat(80).yellow()));
+                                storage(&format!("{}", "ВНИМАНИЕ! ВЫ ПОЛУЧИЛИ УНИКАЛЬНЫЙ ТОКЕН ДЛЯ ХРАНЕНИЯ И ПОЛУЧЕНИЯ ДАННЫХ С P2P ПИРА".red().bold()));
+                                storage(&format!("{}", "ЕСЛИ ВЫ ПОТЕРЯЕТЕ КЛЮЧ ВЫ НЕ СМОЖЕТЕ ПОЛУЧИТЬ ДОСТУП К ДАННЫМ".red().bold()));
+                                storage(&format!("{}", "=".repeat(80).yellow()));
 
                                 if let Ok(token_bytes) = base64::decode(&response.token) {
                                     if let Ok(token_str) = String::from_utf8(token_bytes) {
                                         if let Ok(token) =
                                             serde_json::from_str::<StorageToken>(&token_str)
                                         {
-                                            LOGGER.storage(&format!(
+                                            storage(&format!(
                                                 "\n{}",
                                                 "ДЕТАЛИ ТОКЕНА:".cyan().bold()
                                             ));
-                                            LOGGER.storage(&format!(
+                                            storage(&format!(
                                                 "{} {}",
                                                 "Размер файла:".yellow(),
                                                 format!("{} байт", token.file_size).white()
                                             ));
-                                            LOGGER.storage(&format!(
+                                            storage(&format!(
                                                 "{} {}",
                                                 "Провайдер хранилища:".yellow(),
                                                 token.storage_provider.white()
                                             ));
-                                            LOGGER.storage(&format!(
+                                            storage(&format!(
                                                 "{} {}",
                                                 "Временная метка:".yellow(),
                                                 format!("{}", token.timestamp).white()
                                             ));
-                                            LOGGER.storage(&format!(
+                                            storage(&format!(
                                                 "{} {}",
                                                 "Подпись:".yellow(),
                                                 hex::encode(&token.signature).white()
@@ -317,7 +317,7 @@ impl ConnectionManager {
                                                 &response.token,
                                                 token.file_size,
                                             ) {
-                                                LOGGER.error(&format!(
+                                                error(&format!(
                                                     "Failed to save token to database: {}",
                                                     e
                                                 ));
@@ -326,20 +326,20 @@ impl ConnectionManager {
                                     }
                                 }
 
-                                LOGGER.storage(&format!("\n{}", "=".repeat(80).yellow()));
-                                LOGGER.storage(&format!(
+                                storage(&format!("\n{}", "=".repeat(80).yellow()));
+                                storage(&format!(
                                     "{}",
                                     "ТОКЕН В BASE64:".cyan().bold()
                                 ));
-                                LOGGER.storage(&format!("{}", response.token.white()));
-                                LOGGER.storage(&format!("{}", "=".repeat(80).yellow()));
+                                storage(&format!("{}", response.token.white()));
+                                storage(&format!("{}", "=".repeat(80).yellow()));
                             }
                             _ => {}
                         }
                     }
 
                     if packet.act == "http_proxy_request" {
-                        LOGGER.debug("Received http proxy request");
+                        debug("Received http proxy request");
                         let connection = connection.clone();
                         let manager = Arc::new(self.clone());
                         let packet_clone = packet.clone();
@@ -359,18 +359,18 @@ impl ConnectionManager {
                         if let Some(TransportData::SyncPeerInfoData(peer_info_data)) =
                             packet.data
                         {
-                            LOGGER.peer("Received peer list:");
-                            for peer in peer_info_data.peers {
-                                LOGGER.peer(&format!("Peer - KEY: {}", peer.uuid));
+                            peer("Received peer list:");
+                            for peer_info in peer_info_data.peers {
+                                peer(&format!("Peer - KEY: {}", peer_info.uuid));
                             }
                         } else {
-                            LOGGER.error("Peer list data is missing.");
+                            error("Peer list data is missing.");
                         }
                     } else if protocol_connection == Protocol::STUN {
-                        LOGGER.debug("Processing STUN packet");
+                        debug("Processing STUN packet");
                         match packet.act.as_str() {
                             "wait_connection" => {
-                                LOGGER.debug(&format!(
+                                debug(&format!(
                                     "Received wait_connection from {}",
                                     from_peer_key
                                 ));
@@ -385,16 +385,16 @@ impl ConnectionManager {
                                 .await;
 
                                 if let Err(e) = result {
-                                    LOGGER.error(&format!(
+                                    error(&format!(
                                         "Failed to send wait_connection: {}",
                                         e
                                     ));
                                 } else {
-                                    LOGGER.debug("Successfully sent wait_connection");
+                                    debug("Successfully sent wait_connection");
                                 }
                             }
                             "accept_connection" => {
-                                LOGGER.debug(&format!(
+                                debug(&format!(
                                     "Received accept_connection from {}",
                                     from_peer_key
                                 ));
@@ -407,7 +407,7 @@ impl ConnectionManager {
 
                                 match result {
                                     Ok(_) => {
-                                        LOGGER.debug("Connection established successfully");
+                                        debug("Connection established successfully");
                                         self.connections_turn.insert(
                                             from_peer_key.clone(),
                                             ConnectionTurnStatus {
@@ -417,7 +417,7 @@ impl ConnectionManager {
                                         );
                                     }
                                     Err(e) => {
-                                        LOGGER.error(&format!(
+                                        error(&format!(
                                             "Failed to establish connection: {}",
                                             e
                                         ));
@@ -432,7 +432,7 @@ impl ConnectionManager {
                                 }
                             }
                             _ => {
-                                LOGGER.debug(&format!("Unknown STUN act: {}", packet.act));
+                                debug(&format!("Unknown STUN act: {}", packet.act));
                             }
                         }
                     } else if protocol_connection == Protocol::TURN
@@ -447,21 +447,21 @@ impl ConnectionManager {
                         );
                     }
 
-                    LOGGER.debug(&format!("From peer_key: {}", from_peer_key.clone()));
+                    debug(&format!("From peer_key: {}", from_peer_key.clone()));
                     if let Some(mut status) = self.connections_turn.get_mut(&from_peer_key)
                     {
                         if status.turn_connection && !status.connected {
                             let result_turn_tunnel =
                                 turn_tunnel(packet_clone, &connection, &self.db).await;
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                            LOGGER.debug(&format!(
+                            debug(&format!(
                                 "Result turn tunnel {:?}",
                                 result_turn_tunnel
                             ));
                             match result_turn_tunnel {
                                 Ok(r) => {
                                     if r == "successful_connection" {
-                                        LOGGER.turn("Connection established!");
+                                        turn("Connection established!");
                                         status.connected = true;
                                         status.turn_connection = false;
 
@@ -477,20 +477,19 @@ impl ConnectionManager {
                                             uuid: generate_uuid(),
                                             nodes: vec![],
                                         };
-                                        LOGGER.debug("Sending accept connection");
+                                        debug("Sending accept connection");
                                         let _ = connection.send_packet(packet_hello).await;
                                     } else if r == "send_wait_connection" {
-                                        LOGGER
-                                            .peer("Wait answer acceptation connection...");
+                                        peer("Wait answer acceptation connection...");
                                     }
                                 }
                                 Err(e) => {
                                     status.connected = false;
                                     status.turn_connection = true;
-                                    LOGGER.error(&format!("Fail: {}", e));
+                                    error(&format!("Fail: {}", e));
                                 }
                             }
-                            LOGGER.debug("Wait new packets...");
+                            debug("Wait new packets...");
                         } else {
                             let packet_file_clone = packet_clone.clone();
                             match packet_clone.act.as_str() {
@@ -508,7 +507,7 @@ impl ConnectionManager {
                                 }
                                 "message_response" => {
                                     if let Err(e) = self.handle_message_response().await {
-                                        LOGGER.error(&format!(
+                                        error(&format!(
                                             "Failed to handle message response: {}",
                                             e
                                         ));
@@ -526,7 +525,7 @@ impl ConnectionManager {
                                             )
                                             .await
                                         {
-                                            LOGGER.error(&format!(
+                                            error(&format!(
                                                 "Failed to handle message: {}",
                                                 e
                                             ));
@@ -537,12 +536,12 @@ impl ConnectionManager {
                             }
                         }
                     } else {
-                        LOGGER.error("[Turn] Connection not found");
+                        error("[Turn] Connection not found");
                     }
                 }
             }
             ConnectionType::Stun => {
-                LOGGER.debug(&format!("Received message from Tunnel: {:?}", packet));
+                debug(&format!("Received message from Tunnel: {:?}", packet));
             }
         }
     }
