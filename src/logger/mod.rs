@@ -1,6 +1,6 @@
 use colored::*;
 
-static mut SHOW_DEBUG: bool = false;
+static mut SHOW_DEBUG: bool = true;
 static mut SHOW_INFO: bool = true;
 static mut SHOW_WARNING: bool = true;
 static mut SHOW_ERROR: bool = true;

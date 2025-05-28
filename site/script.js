@@ -183,6 +183,12 @@ function displayGallery(files) {
         publicStatus.className = `text-xs mb-3 ${file.public ? 'text-green-400' : 'text-yellow-400'}`;
         publicStatus.innerHTML = file.public ? '🔓 <span class="align-middle">Публичный</span>' : '🔒 <span class="align-middle">Приватный</span>';
 
+        const nodeInfo = document.createElement('p');
+        nodeInfo.className = 'text-xs text-gray-400 mb-3 flex items-center gap-1';
+        const nodeHash = file.storage_peer_key || 'Неизвестно';
+        const shortNodeHash = nodeHash !== 'Неизвестно' ? `${nodeHash.substring(0,12)}...` : nodeHash;
+        nodeInfo.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" /></svg> <span class="font-jetbrains-mono" title="${nodeHash}">${shortNodeHash}</span>`;
+
         const copyLinkButton = document.createElement('button');
         copyLinkButton.textContent = '🔗 Копировать ссылку';
         copyLinkButton.className = 'w-full text-xs bg-purple-600 hover:bg-purple-700 text-white py-1.5 px-3 rounded-md transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-opacity-50';
@@ -222,6 +228,7 @@ function displayGallery(files) {
         contentDiv.appendChild(hash);
         contentDiv.appendChild(size);
         contentDiv.appendChild(publicStatus);
+        contentDiv.appendChild(nodeInfo);
         contentDiv.appendChild(copyLinkButton);
         item.appendChild(contentDiv);
         galleryGridEl.appendChild(item);
@@ -291,7 +298,6 @@ async function loadGallery() {
     displayGallery(files);
 }
 
-// --- Section Navigation Logic ---
 function setupSectionNavigation() {
     const sections = document.querySelectorAll('.section');
     const dots = document.querySelectorAll('.nav-dot');
@@ -342,7 +348,29 @@ function setupSectionNavigation() {
     if (dots.length > 0) dots[0].classList.add('active');
 }
 
-// --- Initialization ---
+async function showCurrentFileOwner() {
+    const fileOwnerInfoEl = document.getElementById('file-owner-info');
+    if (!fileOwnerInfoEl) return;
+    const pathParts = window.location.pathname.split('/');
+    const fileHash = pathParts[pathParts.length - 1].match(/^[a-fA-F0-9]{16,}$/) ? pathParts[pathParts.length - 1] : null;
+    if (!fileHash) {
+        fileOwnerInfoEl.textContent = 'Текущий файл не определён (хэш не найден в URL).';
+        return;
+    }
+    fileOwnerInfoEl.textContent = 'Поиск владельца файла...';
+    try {
+        const files = await fetchUploadedFiles();
+        const file = files.find(f => f.file_hash === fileHash);
+        if (file) {
+            fileOwnerInfoEl.innerHTML = `Текущий файл: <span class="font-jetbrains-mono text-purple-300">${fileHash}</span><br>Владелец (нода): <span class="font-jetbrains-mono text-green-300">${file.storage_peer_key || 'Неизвестно'}</span>`;
+        } else {
+            fileOwnerInfoEl.textContent = 'Файл с таким хэшем не найден в сети.';
+        }
+    } catch (e) {
+        fileOwnerInfoEl.textContent = 'Ошибка при поиске владельца файла.';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     fetchCurrentNodeInfo().then(updateNodeInfoUI).catch(error => {
         console.error("Не удалось загрузить информацию об узле:", error);
@@ -360,4 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     loadGallery();
     setupSectionNavigation();
+    showCurrentFileOwner();
 }); 
+
+showCurrentFileOwner();

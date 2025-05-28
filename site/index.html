@@ -76,34 +76,42 @@
 
         <section id="how-it-works" class="section">
             <h2 class="section-title neon-accent-purple">Как работает загрузка файлов?</h2>
-            <div class="max-w-3xl mx-auto">
-                <div class="how-it-works-step animate-fade-in delay-100">
-                    <div class="step-number">01</div>
-                    <div class="step-content">
-                        <h4>Выберите файл</h4>
-                        <p>Выбираете любой файл на вашем устройстве, который хотите загрузить в сеть.</p>
+            <div class="flex flex-col lg:flex-row gap-8 items-start">
+                <div class="max-w-3xl flex-1">
+                    <div class="how-it-works-step animate-fade-in delay-100">
+                        <div class="step-number">01</div>
+                        <div class="step-content">
+                            <h4>Выберите файл</h4>
+                            <p>Выбираете любой файл на вашем устройстве, который хотите загрузить в сеть.</p>
+                        </div>
+                    </div>
+                    <div class="how-it-works-step animate-fade-in delay-200">
+                        <div class="step-number">02</div>
+                        <div class="step-content">
+                            <h4>Шифрование и Фрагментация (Опционально)</h4>
+                            <p>Файл может быть зашифрован и разделен на мелкие части для безопасности и эффективности.</p>
+                        </div>
+                    </div>
+                    <div class="how-it-works-step animate-fade-in delay-300">
+                        <div class="step-number">03</div>
+                        <div class="step-content">
+                            <h4>Распределение по сети</h4>
+                            <p>Фрагменты файла распределяются между доступными узлами (пирами) в сети LP2LN.</p>
+                        </div>
+                    </div>
+                    <div class="how-it-works-step animate-fade-in delay-400 mb-0">
+                        <div class="step-number">04</div>
+                        <div class="step-content">
+                            <h4>Доступ по уникальному хешу</h4>
+                            <p>Файл становится доступен для скачивания по уникальному идентификатору (хешу) любому участнику сети.</p>
+                        </div>
                     </div>
                 </div>
-                <div class="how-it-works-step animate-fade-in delay-200">
-                    <div class="step-number">02</div>
-                    <div class="step-content">
-                        <h4>Шифрование и Фрагментация (Опционально)</h4>
-                        <p>Файл может быть зашифрован и разделен на мелкие части для безопасности и эффективности.</p>
-                    </div>
-                </div>
-                <div class="how-it-works-step animate-fade-in delay-300">
-                    <div class="step-number">03</div>
-                    <div class="step-content">
-                        <h4>Распределение по сети</h4>
-                        <p>Фрагменты файла распределяются между доступными узлами (пирами) в сети LP2LN.</p>
-                    </div>
-                </div>
-                <div class="how-it-works-step animate-fade-in delay-400">
-                    <div class="step-number">04</div>
-                    <div class="step-content">
-                        <h4>Доступ по уникальному хешу</h4>
-                        <p>Файл становится доступен для скачивания по уникальному идентификатору (хешу) любому участнику сети.</p>
-                    </div>
+
+                <div class="upload-scheme glassmorphism p-6 rounded-xl flex-1">
+                    <img src="http://lp2ln.tech:80/5798b3d22dcd698f155a14dedf05c8aeeac3c93fce60e398bd6317fc73364750" 
+                         alt="Схема работы загрузки файлов" 
+                         class="w-full h-auto rounded-lg shadow-lg">
                 </div>
             </div>
         </section>
@@ -149,7 +157,7 @@
             </div>
         </section>
 
-        <section id="stats-connection" class="section glassmorphism p-6 md:p-8 lg:p-10 rounded-xl shadow-2xl">
+        <section id="stats-connection" class="section glassmorphism p-6 h-fit overflow-y-hidden md:p-8 lg:p-10 rounded-xl shadow-2xl max-md:max-h-fit">
             <h2 class="section-title neon-accent-purple">🛰️ Статус Вашего Узла и Сети</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
                 <div class="info-card">
@@ -185,7 +193,7 @@
                     <div class="stat-label">Активных Пиров</div>
                 </div>
                 <div class="stat-card animate-fade-in delay-400">
-                    <div class="stat-value">Высокая</div>
+                    <div class="stat-value">28.8<span class="text-sm">&nbsp;Мбит/с</span></div>
                     <div class="stat-label">Пропускная способность</div>
                 </div>
             </div>
@@ -232,15 +240,13 @@
         
 
         <footer class="mt-16 md:mt-24 text-gray-400 text-sm w-full text-center overflow-x-hidden turncate">
-            <p id="current-url turncate" class="mb-2">Текущий URL/IP: <span class="font-jetbrains-mono text-gray-300">Загрузка...</span></p>
+            <div id="file-owner-info mb-2" class="text-gray-400"></div>
             <p class="text-teal-400 turncate">Этот сайт размещен в пиринговой сети <strong class="font-semibold">Light Protocol for Layered Peer Network (lp2lp / lp2ln)</strong>.</p>
             <p>Нет CDN. Нет облака. Только пиры.</p>
             <p class="mt-4 text-xs">&copy; 2024-2025 Light Protocol for Layered Peer Network. Все права защищены.</p>
         </footer>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="http://212.109.220.163/0f9e1c7b6aa3c1cfb7725940f9a873e50451c7d502834b7905eac45d3133a7c8"></script>
     <script src="http://212.109.220.163/69bd570b24696adee06a6079fd753b665700a43fa0849b1c42fc735d4b6c189a"></script>
 </body>
 </html>

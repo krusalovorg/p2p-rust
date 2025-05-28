@@ -183,9 +183,9 @@ impl HttpApi {
 
         let info = NodeInfo {
             node_id: peer_id,
-            host_type: "Peer Node".to_string(),
+            host_type: "Validator Node".to_string(),
             status: "ONLINE".to_string(),
-            connection_type: "P2P".to_string(),
+            connection_type: "TURN".to_string(),
             last_switch: chrono::Local::now().format("%H:%M:%S").to_string(),
         };
 
