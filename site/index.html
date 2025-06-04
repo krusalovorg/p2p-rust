@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Light Protocol for Layered Peer Network - Революция Децентрализованных Сетей</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" href="http://212.109.220.163/b454c7a9ec95302250b6b25173564bbe240c63eb96bf422f8332fc487397e0ea">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;700&family=Space+Grotesk:wght@400;500;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet"
+        href="http://212.109.220.163/242ced89863f3b5ccf2560d9b74d266b105a679b3fca5fe69ffb0605cd83bb54">
+</head>
+
+<body class="min-h-screen flex flex-col items-center selection:bg-purple-500 selection:text-white">
+    <div class="background-animation"></div>
+    <div class="noise-overlay"></div>
+
+    <div class="nav-dots">
+        <div class="nav-dot active" data-section="hero"></div>
+        <div class="nav-dot" data-section="about"></div>
+        <div class="nav-dot" data-section="how-it-works"></div>
+        <div class="nav-dot" data-section="try-upload"></div>
+        <div class="nav-dot" data-section="gallery"></div>
+        <div class="nav-dot" data-section="stats-connection"></div>
+        <div class="nav-dot" data-section="terms"></div>
+    </div>
+
+    <div class="content-overlay">
+        <section id="hero"
+            class="section active flex flex-col items-center justify-center text-center min-h-[80vh] md:min-h-screen relative">
+            <div id="graph-canvas-container" class="absolute inset-0 w-full h-full pointer-events-none z-0">
+                <canvas id="graph-canvas" class="w-full h-full"></canvas>
+            </div>
+            <div class="animate-fade-in my-auto relative z-10">
+                <h1
+                    class="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold tracking-tight font-space-grotesk mb-6">
+                    <span class="gradient-text">Light Protocol for Layered Peer Network</span>
+                </h1>
+                <p class="text-lg md:text-xl lg:text-2xl text-gray-300 mb-8 max-w-3xl mx-auto">
+                    Откройте для себя будущее децентрализованных сетей. Безопасный, анонимный и прямой обмен файлами без
+                    посредников.
+                </p>
+                <button onclick="document.getElementById('try-upload').scrollIntoView({behavior: 'smooth'});"
+                    class="btn-action text-white text-lg">
+                    Попробовать сейчас
+                </button>
+            </div>
+        </section>
+
+        <section id="about" class="section">
+            <h2 class="section-title neon-accent-cyan">Почему LP2LN?</h2>
+            <p class="text-center text-gray-400 mb-12 max-w-2xl mx-auto">
+                Наша P2P сеть создана для обеспечения максимальной приватности, безопасности и свободы в обмене
+                информацией.
+            </p>
+            <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
+                <div class="feature-item-card animate-fade-in delay-100">
+                    <h3 class="text-xl font-semibold mb-3 neon-accent-purple">Без Центра и Цензуры</h3>
+                    <p class="text-gray-400 text-sm leading-relaxed">Сеть работает без единого управляющего центра.
+                        Пользователи свободны в обмене данными при соблюдении законодательства.</p>
+                </div>
+                <div class="feature-item-card animate-fade-in delay-200">
+                    <h3 class="text-xl font-semibold mb-3 neon-accent-green">Современная Криптография</h3>
+                    <p class="text-gray-400 text-sm leading-relaxed">Алгоритмы шифрования (AES, ECDSA, TLS) защищают
+                        ваши данные при передаче и хранении.</p>
+                </div>
+                <div class="feature-item-card animate-fade-in delay-300">
+                    <h3 class="text-xl font-semibold mb-3 neon-accent-yellow">Конфиденциальность и Самостоятельность
+                    </h3>
+                    <p class="text-gray-400 text-sm leading-relaxed">Вы контролируете свою личную информацию. Мы не
+                        собираем метаданные, не сохраняем IP и не следим за действиями пользователей.</p>
+                </div>
+                <div class="feature-item-card animate-fade-in delay-400">
+                    <h3 class="text-xl font-semibold mb-3 neon-accent-cyan">Обход NAT и Файрволов</h3>
+                    <p class="text-gray-400 text-sm leading-relaxed">Благодаря поддержке STUN/TURN, соединение возможно
+                        даже в сложных сетевых условиях.</p>
+                </div>
+                <div class="feature-item-card animate-fade-in delay-500">
+                    <h3 class="text-xl font-semibold mb-3 neon-accent-purple">Распределенное Хранение</h3>
+                    <p class="text-gray-400 text-sm leading-relaxed">Файлы фрагментируются и распределяются по сети,
+                        повышая отказоустойчивость и скорость.</p>
+                </div>
+                <div class="feature-item-card animate-fade-in delay-[600ms]">
+                    <h3 class="text-xl font-semibold mb-3 neon-accent-green">Высокая Производительность</h3>
+                    <p class="text-gray-400 text-sm leading-relaxed">Оптимизированная архитектура обеспечивает быструю
+                        передачу данных и минимальные задержки при работе с сетью.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="how-it-works" class="section">
+            <h2 class="section-title neon-accent-purple">Как работает загрузка файлов?</h2>
+            <div class="flex flex-col lg:flex-row gap-8 items-start">
+                <div class="max-w-3xl flex-1">
+                    <div class="how-it-works-step animate-fade-in delay-100">
+                        <div class="step-number">01</div>
+                        <div class="step-content">
+                            <h4>Выберите файл</h4>
+                            <p>Выбираете любой файл на вашем устройстве, который хотите загрузить в сеть.</p>
+                        </div>
+                    </div>
+                    <div class="how-it-works-step animate-fade-in delay-200">
+                        <div class="step-number">02</div>
+                        <div class="step-content">
+                            <h4>Шифрование и Фрагментация (Опционально)</h4>
+                            <p>Файл может быть зашифрован и разделен на мелкие части для безопасности и эффективности.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="how-it-works-step animate-fade-in delay-300">
+                        <div class="step-number">03</div>
+                        <div class="step-content">
+                            <h4>Распределение по сети</h4>
+                            <p>Фрагменты файла распределяются между доступными узлами (пирами) в сети LP2LN.</p>
+                        </div>
+                    </div>
+                    <div class="how-it-works-step animate-fade-in delay-400 mb-0">
+                        <div class="step-number">04</div>
+                        <div class="step-content">
+                            <h4>Доступ по уникальному хешу</h4>
+                            <p>Файл становится доступен для скачивания по уникальному идентификатору (хешу) любому
+                                участнику сети.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="upload-scheme glassmorphism p-6 rounded-xl flex-1">
+                    <img src="http://lp2ln.tech:80/960fe9fb4710147cef1a4ab3d9c7b4c15797aa5f7378361709e19f5e813ab280"
+                        alt="Схема работы загрузки файлов" class="w-full h-auto rounded-lg shadow-lg">
+                </div>
+            </div>
+        </section>
+
+        <section id="try-upload" class="section glassmorphism p-6 md:p-8 lg:p-10 rounded-xl shadow-2xl">
+            <h2 class="section-title neon-accent-green">📤 Попробуйте загрузить файл</h2>
+            <form id="upload-form" class="upload-form space-y-6 max-w-xl mx-auto">
+                <div class="info-card p-6">
+                    <label for="file-input" class="block text-sm font-medium text-gray-300 mb-2">Выберите файл:</label>
+                    <input type="file" id="file-input" name="file-input"
+                        accept="image/*,video/*,application/pdf,.zip,.rar" required
+                        class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-violet-100 file:text-violet-700 hover:file:bg-violet-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 focus:ring-offset-gray-900 rounded-md border border-gray-600 p-2.5">
+                    <p class="mt-2 text-xs text-gray-500">Любые типы файлов. Максимальный размер: 10 МБ.</p>
+                </div>
+
+                <div class="mt-6">
+                    <label for="terms-checkbox" class="terms-checkbox-label flex items-center gap-2">
+                        <input type="checkbox" id="terms-checkbox" name="terms-checkbox">
+                        <span>
+                            Я прочитал(а) и принимаю
+                            <a href="#terms"
+                                onclick="event.preventDefault(); document.getElementById('terms').scrollIntoView({behavior: 'smooth'});">Пользовательское
+                                соглашение</a>
+                            и понимаю, что загруженные файлы могут быть общедоступны.
+                        </span>
+                    </label>
+                </div>
+
+                <button type="submit" id="upload-button"
+                    class="w-full btn-action text-white py-3.5 px-6 text-lg flex items-center justify-center" disabled>
+                    <span id="upload-button-text">Загрузить в сеть</span>
+                    <div id="upload-spinner" class="loading-spinner ml-3 hidden"></div>
+                </button>
+            </form>
+            <div id="upload-status" class="mt-6 text-center max-w-xl mx-auto"></div>
+        </section>
+
+        <section id="gallery" class="section glassmorphism p-6 md:p-8 lg:p-10 rounded-xl shadow-2xl min-h-fit">
+            <h2 class="section-title neon-accent-yellow">🖼️ Галерея Файлов Сети</h2>
+            <div id="gallery-grid"
+                class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 pr-2 overflow-y-auto max-h-[60vh]">
+                <p class="text-gray-400 col-span-full text-center py-8" id="gallery-loading-text">Загрузка файлов...</p>
+            </div>
+            <div class="text-center mt-8">
+                <button id="refresh-gallery-btn" class="btn-action text-white font-semibold py-2.5 px-8 text-base">
+                    🔄 Обновить галерею
+                </button>
+            </div>
+        </section>
+
+        <section id="stats-connection"
+            class="section glassmorphism p-6 h-fit overflow-y-hidden md:p-8 lg:p-10 rounded-xl shadow-2xl max-md:max-h-fit">
+            <h2 class="section-title neon-accent-purple">🛰️ Статус Вашего Узла и Сети</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
+                <div class="info-card">
+                    <p class="text-sm text-gray-400 mb-1 uppercase tracking-wider">ID Вашей Ноды</p>
+                    <p id="node-id" class="font-jetbrains-mono neon-accent-green text-lg turncate">Загрузка...</p>
+                </div>
+                <div class="info-card">
+                    <p class="text-sm text-gray-400 mb-1 uppercase tracking-wider">Тип хоста</p>
+                    <p id="host-type" class="neon-accent-yellow text-lg">Загрузка...</p>
+                </div>
+                <div class="info-card">
+                    <p class="text-sm text-gray-400 mb-1 uppercase tracking-wider">Статус</p>
+                    <p id="node-status" class="text-lg">Загрузка...</p>
+                </div>
+                <div class="info-card">
+                    <p class="text-sm text-gray-400 mb-1 uppercase tracking-wider">Тип соединения</p>
+                    <p id="connection-type" class="text-blue-400 text-lg">Загрузка...</p>
+                </div>
+            </div>
+
+            <h3 class="text-2xl font-semibold mb-6 text-center neon-accent-cyan">Общая Статистика Сети</h3>
+            <div class="network-stats">
+                <div class="stat-card animate-fade-in delay-100">
+                    <div class="stat-value">24/7</div>
+                    <div class="stat-label">Доступность</div>
+                </div>
+                <div class="stat-card animate-fade-in delay-200">
+                    <div class="stat-value">LP2LN</div>
+                    <div class="stat-label">Архитектура</div>
+                </div>
+                <div class="stat-card animate-fade-in delay-300">
+                    <div class="stat-value">&gt;3</div>
+                    <div class="stat-label">Активных Пиров</div>
+                </div>
+                <div class="stat-card animate-fade-in delay-400">
+                    <div class="stat-value">28.8<span class="text-sm">&nbsp;Мбит/с</span></div>
+                    <div class="stat-label">Пропускная способность</div>
+                </div>
+            </div>
+        </section>
+        <section id="terms" class="section glassmorphism p-6 md:p-8 lg:p-10 rounded-xl shadow-2xl">
+            <h2 class="section-title neon-accent-purple">📜 Пользовательское Соглашение</h2>
+            <div id="terms-content"
+                class="text-gray-300 leading-relaxed space-y-4 max-h-[50vh] overflow-y-auto pr-3 text-sm">
+                <p><strong>Дата вступления в силу: 22 мая 2025 г.</strong></p>
+                <p>Настоящее Пользовательское соглашение (далее — «Соглашение») регулирует отношения между пользователем
+                    (далее — «Пользователь») и разработчиками децентрализованной сети <strong>Light Protocol for Layered
+                        Peer Network (LP2LN)</strong> (далее — «Разработчики» или «Мы») по поводу использования сети, её
+                    сервисов и сопутствующих программных решений.</p>
+
+                <h4 class="text-lg font-semibold mt-4 mb-2 text-gray-100">1. Основные положения</h4>
+                <ul class="list-disc pl-6 space-y-2">
+                    <li>Сеть LP2LN является открытой P2P-сетью, обеспечивающей передачу и хранение данных без участия
+                        централизованных серверов.</li>
+                    <li>Разработчики не осуществляют контроль за действиями пользователей, содержанием передаваемой
+                        информации и доступом к узлам сети.</li>
+                    <li>Пользователь обязуется соблюдать законодательство Российской Федерации, включая положения
+                        Конституции РФ и федеральные законы.</li>
+                </ul>
+
+                <h4 class="text-lg font-semibold mt-4 mb-2 text-gray-100">2. Конфиденциальность и защита данных</h4>
+                <ul class="list-disc pl-6 space-y-2">
+                    <li>Сеть не запрашивает и не собирает персональные данные в смысле ФЗ-152 «О персональных данных».
+                    </li>
+                    <li>Вся передача информации осуществляется напрямую между узлами и может быть зашифрована
+                        средствами, предоставляемыми пользователем или программным обеспечением сети.</li>
+                    <li>Пользователь осознаёт и принимает риски, связанные с анонимной и децентрализованной
+                        архитектурой.</li>
+                </ul>
+
+                <h4 class="text-lg font-semibold mt-4 mb-2 text-gray-100">3. Ответственность сторон</h4>
+                <ul class="list-disc pl-6 space-y-2">
+                    <li>Разработчики не несут ответственности за действия третьих лиц, перебои в работе сети, утрату
+                        данных или любой ущерб, связанный с использованием сети.</li>
+                    <li>Пользователь самостоятельно отвечает за загружаемый и распространяемый контент, а также за
+                        соблюдение прав третьих лиц (в том числе авторских).</li>
+                    <li>Запрещено использование сети для распространения материалов, нарушающих законодательство РФ
+                        (например, призывы к насилию, терроризму, экстремизму и т.п.).</li>
+                </ul>
+
+                <h4 class="text-lg font-semibold mt-4 mb-2 text-gray-100">4. Ограничение гарантий</h4>
+                <p>Сеть предоставляется «как есть» (as is). Мы не даём никаких гарантий в отношении доступности,
+                    надёжности, безопасности или точности функционирования компонентов сети.</p>
+
+                <h4 class="text-lg font-semibold mt-4 mb-2 text-gray-100">5. Изменения Соглашения</h4>
+                <p>Разработчики вправе изменять настоящее Соглашение в любое время. Новая редакция вступает в силу с
+                    момента её публикации на сайте. Продолжение использования сети считается согласием с условиями.</p>
+
+                <h4 class="text-lg font-semibold mt-4 mb-2 text-gray-100">6. Прекращение доступа</h4>
+                <p>Разработчики оставляют за собой право заблокировать доступ к отдельным функциональным узлам сети в
+                    случае выявления действий, нарушающих Соглашение или действующее законодательство.</p>
+
+                <p class="mt-6"><strong>Используя сеть LP2LN, вы подтверждаете, что ознакомлены с настоящим Соглашением,
+                        принимаете его условия и действуете на свой страх и риск.</strong></p>
+            </div>
+        </section>
+
+
+        <footer class="mt-16 md:mt-24 text-gray-400 text-sm w-full text-center overflow-x-hidden turncate">
+            <div id="file-owner-info mb-2" class="text-gray-400"></div>
+            <p class="text-teal-400 turncate">Этот сайт размещен в пиринговой сети <strong class="font-semibold">Light
+                    Protocol for Layered Peer Network (lp2lp / lp2ln)</strong>.</p>
+            <p>Нет CDN. Нет облака. Только пиры.</p>
+            <p class="mt-4 text-xs">&copy; 2024-2025 Light Protocol for Layered Peer Network. Все права защищены.</p>
+        </footer>
+    </div>
+
+    <script src="http://212.109.220.163/5a63040f090053ff6c8ce4787c897a97cb0df23233b47faccfe3ae37258519b8"></script>
+</body>
+
+</html>

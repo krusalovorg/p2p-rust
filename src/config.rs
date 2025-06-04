@@ -6,8 +6,9 @@ use serde::Deserialize;
 pub struct Config {
     pub signal_server_ip: String,
     pub signal_server_port: i64,
-    pub other_signal_servers: Vec<String>,
     pub storage_size: u64,
+    pub proxy_ip: String,
+    pub proxy_port: u16,
 }
 
 impl Config {
@@ -17,8 +18,9 @@ impl Config {
         Self {
             signal_server_ip: config["signal_server_ip"].as_str().unwrap().to_string(),
             signal_server_port: config["signal_server_port"].as_integer().unwrap(),
-            other_signal_servers: config["other_signal_servers"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect(),
             storage_size: config["storage_size"].as_integer().unwrap() as u64,
+            proxy_ip: config["proxy_ip"].as_str().unwrap().to_string(),
+            proxy_port: config["proxy_port"].as_integer().unwrap() as u16,
         }
     }
 }

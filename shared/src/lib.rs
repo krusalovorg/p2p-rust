@@ -2,6 +2,11 @@ pub mod packets {
     #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
     pub struct PeerInfo {
         pub peer_id: String,
+        pub is_signal_server: bool,
+        pub used_space: u64,
+        pub free_space: u64,
+        pub stored_files: Vec<String>,
+        pub public_key: String,
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -144,7 +149,6 @@ pub mod packets {
         pub act: String,        //info, answer, wait_connection,
         pub to: Option<String>, //кому отправляем данный пакет
         pub data: Option<TransportData>,
-        pub status: Option<Status>, // success, falied
         pub protocol: Protocol,     // TURN, STUN, SIGNAL
         pub uuid: String,
     }
@@ -153,11 +157,11 @@ pub mod packets {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(
                 f,
-                "TransportPacket {{ act: {}, to: {:?}, protocol: {:?}, uuid: {} }}",
+                "TransportPacket {{ act: {}, to: {:?}, protocol: {:?}, peer_key: {} }}",
                 self.act,
                 self.to,
                 self.protocol,
-                format!("{:?}...{:?}", &self.uuid[0..5], &self.uuid[30..])
+                format!("{:?}...{:?}", &self.peer_key[0..5], &self.peer_key[30..])
             )
         }
     }

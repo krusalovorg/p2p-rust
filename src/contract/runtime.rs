@@ -47,7 +47,7 @@ fn log_error(message: &str, context: Option<&str>) {
     log(LogLevel::Error, message, context);
 }
 
-pub fn execute_contract(path: &str, func_name: &str) {
+pub fn execute_contract_with_payload(path: &str, function_name: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
     log_info(&format!("Loading contract from: {}", path.yellow()), Some("CONTRACT_LOADER"));
 
     let engine = Engine::default();
@@ -55,7 +55,7 @@ pub fn execute_contract(path: &str, func_name: &str) {
         Ok(m) => m,
         Err(e) => {
             log_error(&format!("Failed to load contract: {}", e), Some("CONTRACT_LOADER"));
-            return;
+            return Err(format!("Failed to load contract: {}", e));
         }
     };
 
@@ -64,102 +64,52 @@ pub fn execute_contract(path: &str, func_name: &str) {
         Ok(i) => i,
         Err(e) => {
             log_error(&format!("Failed to create instance: {}", e), Some("CONTRACT_LOADER"));
-            return;
+            return Err(format!("Failed to create instance: {}", e));
         }
     };
 
     log_info("Contract loaded successfully", Some("CONTRACT_LOADER"));
 
-    log_info(&format!("Looking for function '{}'", func_name.cyan()), Some("FUNCTION_LOOKUP"));
-    let func = match instance.get_func(&mut store, func_name) {
-        Some(f) => f,
-        None => {
-            log_error(&format!("Function '{}' not found", func_name), Some("FUNCTION_LOOKUP"));
-            return;
-        }
-    };
-
-    log_info(&format!("Executing '{}'", func_name.cyan()), Some("FUNCTION_EXECUTION"));
-    match func.call(&mut store, &[], &mut []) {
-        Ok(_) => log_info("Contract executed successfully", Some("FUNCTION_EXECUTION")),
-        Err(e) => log_error(&format!("Contract execution failed: {}", e), Some("FUNCTION_EXECUTION")),
-    }
-}
-
-fn execute_increment_with_arg(contract_path: &str, peer_id: &str) {
-    log_debug(&format!("Initializing contract execution for peer: {}", peer_id), Some("INCREMENT_OP"));
-    
-    let engine = Engine::default();
-    let module = match Module::from_file(&engine, contract_path) {
-        Ok(m) => m,
-        Err(e) => {
-            log_error(&format!("Failed to load contract: {}", e), Some("INCREMENT_OP"));
-            return;
-        }
-    };
-    
-    let mut store = Store::new(&engine, ());
-    let instance = match Instance::new(&mut store, &module, &[]) {
-        Ok(i) => i,
-        Err(e) => {
-            log_error(&format!("Failed to create instance: {}", e), Some("INCREMENT_OP"));
-            return;
-        }
-    };
-
     let memory = match instance.get_memory(&mut store, "memory") {
         Some(m) => m,
         None => {
-            log_error("Memory not found", Some("INCREMENT_OP"));
-            return;
+            log_error("Memory not found", Some("CONTRACT_LOADER"));
+            return Err("Memory not found".to_string());
         }
     };
-
-    let init = match instance.get_func(&mut store, "init") {
-        Some(f) => f,
-        None => {
-            log_error("Init function not found", Some("INCREMENT_OP"));
-            return;
-        }
-    };
-    
-    log_debug("Initializing contract state", Some("INCREMENT_OP"));
-    if let Err(e) = init.call(&mut store, &[], &mut []) {
-        log_error(&format!("Failed to initialize contract: {}", e), Some("INCREMENT_OP"));
-        return;
-    }
 
     let offset = 1024;
-    let peer_id_bytes = peer_id.as_bytes();
-    if let Err(e) = memory.write(&mut store, offset, peer_id_bytes) {
-        log_error(&format!("Failed to write peer_id to memory: {}", e), Some("INCREMENT_OP"));
-        return;
+    if let Err(e) = memory.write(&mut store, offset, payload) {
+        log_error(&format!("Failed to write payload to memory: {}", e), Some("CONTRACT_LOADER"));
+        return Err(format!("Failed to write payload to memory: {}", e));
     }
 
-    let increment = match instance.get_typed_func::<(i32, i32), i64>(&mut store, "increment") {
+    let execute = match instance.get_typed_func::<(i32, i32), i32>(&mut store, function_name) {
         Ok(f) => f,
         Err(e) => {
-            log_error(&format!("Failed to get increment function: {}", e), Some("INCREMENT_OP"));
-            return;
+            log_error(&format!("Failed to get function {}: {}", function_name, e), Some("CONTRACT_LOADER"));
+            return Err(format!("Failed to get function {}: {}", function_name, e));
         }
     };
 
-    log_debug(&format!("Executing increment for peer_id: {}", peer_id), Some("INCREMENT_OP"));
-    let result = match increment.call(&mut store, (offset as i32, peer_id_bytes.len() as i32)) {
+    log_info(&format!("Executing contract function: {}", function_name), Some("CONTRACT_EXECUTION"));
+    let result_offset = match execute.call(&mut store, (offset as i32, payload.len() as i32)) {
         Ok(r) => r,
         Err(e) => {
-            log_error(&format!("Failed to execute increment: {}", e), Some("INCREMENT_OP"));
-            return;
+            log_error(&format!("Contract execution failed: {}", e), Some("CONTRACT_EXECUTION"));
+            return Err(format!("Contract execution failed: {}", e));
         }
     };
 
-    log_info(&format!("Counter for peer_id `{}` now equals {}", peer_id, result), Some("INCREMENT_OP"));
-}
+    let mut result_buffer = vec![0u8; 1024];
+    if let Err(e) = memory.read(&mut store, result_offset as usize, &mut result_buffer) {
+        log_error(&format!("Failed to read result from memory: {}", e), Some("CONTRACT_EXECUTION"));
+        return Err(format!("Failed to read result from memory: {}", e));
+    }
 
-pub fn hardcoded_test_contract() {
-    log_info("Starting WASM smart-contract test suite", Some("TEST_SUITE"));
-    log_info("=================================", Some("TEST_SUITE"));
+    let result_size = result_buffer.iter().position(|&x| x == 0).unwrap_or(result_buffer.len());
+    let result = result_buffer[..result_size].to_vec();
 
-    let path = "contracts/counter/target/wasm32-unknown-unknown/release/counter.wasm";
-    execute_increment_with_arg(path, "peer_id");
+    log_info("Contract executed successfully", Some("CONTRACT_EXECUTION"));
+    Ok(result)
 }

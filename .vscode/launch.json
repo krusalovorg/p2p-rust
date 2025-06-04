@@ -4,6 +4,19 @@
     // Для получения дополнительной информации посетите: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+        
+        {
+            "name": "Run Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/vscode-extension"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/vscode-extension/out/**/*.js"
+            ],
+            "preLaunchTask": "npm: watch"
+        },
         {
             "type": "lldb",
             "request": "launch",

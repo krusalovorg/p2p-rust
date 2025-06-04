@@ -15,7 +15,7 @@ def list_all_files(directory):
     return all_files
 
 def main():
-    src_dir = '../'
+    src_dir = '../src'
     output_file = 'file_list.txt'
     
     if not os.path.exists(src_dir):

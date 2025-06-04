@@ -21,7 +21,7 @@ def read_all_files(directory):
     return ''.join(all_content), total_lines
 
 def main():
-    src_dir = './src'
+    src_dir = '../src'
     output_file = 'code.txt'
     
     if not os.path.exists(src_dir):

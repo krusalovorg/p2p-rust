@@ -9,3 +9,7 @@ pub mod manager;
 pub mod peer;
 pub mod crypto;
 pub mod contract;
+pub mod simulation;
+pub mod http;
+pub mod logger;
+pub mod commands;

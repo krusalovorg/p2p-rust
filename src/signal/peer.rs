@@ -1,16 +1,17 @@
-use async_std::sync::Mutex;
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::sync::Arc;
-use tokio::io::{split, AsyncReadExt, AsyncWriteExt}; // Добавляем split
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, RwLock}; // Добавляем mpsc
+use tokio::sync::{mpsc, RwLock};
+use crate::logger;
 
 #[derive(Clone, Debug)]
 pub struct InfoPeer {
     pub wait_connection: Arc<RwLock<bool>>,
     pub public_addr: Arc<RwLock<String>>,
     pub local_addr: String,
-    pub uuid: Arc<RwLock<Option<String>>>,
+    pub is_signal_server: Arc<RwLock<bool>>,
+    pub peer_key: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,7 +27,7 @@ pub struct Peer {
     pub info: InfoPeer,                                  // Peer information (ip:port)
     tx: mpsc::Sender<String>,                            // Добавляем Sender для отправки сообщений
 
-    open_tunnels: Arc<RwLock<HashMap<String, PeerOpenNetInfo>>>,
+    open_tunnels: Arc<DashMap<String, PeerOpenNetInfo>>,
 }
 
 impl Peer {
@@ -38,16 +39,17 @@ impl Peer {
                 wait_connection: Arc::new(RwLock::new(false)),
                 public_addr: Arc::new(RwLock::new("".to_string())),
                 local_addr: socket.peer_addr().unwrap().to_string(),
-                uuid: Arc::new(RwLock::new(None)),
+                peer_key: Arc::new(RwLock::new(None)),
+                is_signal_server: Arc::new(RwLock::new(false)),
             });
         }
 
-        let open_tunnels = Arc::new(RwLock::new(HashMap::<String, PeerOpenNetInfo>::new()));
+        let open_tunnels = Arc::new(DashMap::new());
 
         let (reader, writer) = split(socket);
         let reader = Arc::new(RwLock::new(reader));
         let writer = Arc::new(RwLock::new(writer));
-        let (tx, _) = mpsc::channel(100); // Оставляем канал для совместимости с существующим кодом
+        let (tx, _) = mpsc::channel(1024);
 
         Arc::new(Self {
             reader,
@@ -66,24 +68,24 @@ impl Peer {
 
         // Отправляем длину сообщения (4 байта)
         if let Err(e) = writer.write_all(&len_bytes).await {
-            println!(
+            logger::debug(&format!(
                 "Failed to send message length to peer {}: {}",
                 self.info.local_addr, e
-            );
+            ));
             return;
         }
 
         // Отправляем само сообщение
         if let Err(e) = writer.write_all(message.as_bytes()).await {
-            println!(
+            logger::debug(&format!(
                 "Failed to send message to peer {}: {}",
                 self.info.local_addr, e
-            );
+            ));
         } else {
-            println!(
+            logger::debug(&format!(
                 "[SendData] Message sent to peer {}: {}",
                 self.info.local_addr, message
-            );
+            ));
         }
     }
 
@@ -96,13 +98,13 @@ impl Peer {
             Ok(_) => {}
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::ConnectionReset {
-                    println!("Peer {} disconnected", self.info.local_addr);
+                    logger::debug(&format!("Peer {} disconnected", self.info.local_addr));
                     return Err("Peer disconnected".to_string());
                 }
-                println!(
+                logger::debug(&format!(
                     "Error reading message length from peer {}: {}",
                     self.info.local_addr, e
-                );
+                ));
                 return Err(e.to_string());
             }
         }
@@ -114,10 +116,10 @@ impl Peer {
         match reader.read_exact(&mut message_bytes).await {
             Ok(_) => {}
             Err(e) => {
-                println!(
+                logger::debug(&format!(
                     "Error reading message from peer {}: {}",
                     self.info.local_addr, e
-                );
+                ));
                 return Err(e.to_string());
             }
         }
@@ -125,27 +127,34 @@ impl Peer {
         match String::from_utf8(message_bytes) {
             Ok(message) => Ok(message),
             Err(e) => {
-                println!(
+                logger::debug(&format!(
                     "Error converting message to string from peer {}: {}",
                     self.info.local_addr, e
-                );
+                ));
                 Err(e.to_string())
             }
         }
     }
 
+    pub async fn is_signal_server(&self) -> bool {
+        self.info.is_signal_server.read().await.clone()
+    }
+
+    pub async fn set_is_signal_server(&self, is_signal_server: bool) {
+        let mut guard = self.info.is_signal_server.write().await;
+        *guard = is_signal_server;
+    }
+
     pub async fn add_open_tunnel(&self, peer_id: &str, ip: String, port: u16) {
-        let mut open_tunnels = self.open_tunnels.write().await;
-        open_tunnels.insert(peer_id.to_string(), PeerOpenNetInfo { ip, port });
+        self.open_tunnels.insert(peer_id.to_string(), PeerOpenNetInfo { ip, port });
     }
 
     pub async fn get_open_tunnel(&self, peer_id: &str) -> Option<PeerOpenNetInfo> {
-        let open_tunnels = self.open_tunnels.read().await;
-        open_tunnels.get(peer_id).cloned()
+        self.open_tunnels.get(peer_id).map(|v| v.clone())
     }
 
     pub async fn get_key(&self) -> Option<String> {
-        return self.info.uuid.read().await.clone();
+        return self.info.peer_key.read().await.clone();
     }
 
     pub async fn set_wait_connection(&self, wait_connection_new: bool) {
@@ -158,9 +167,9 @@ impl Peer {
         *public_addr_now = public_addr;
     }
 
-    pub async fn set_uuid(&self, uuid: String) {
-        let mut current_uuid = self.info.uuid.write().await;
-        *current_uuid = Some(uuid);
+    pub async fn set_peer_key(&self, peer_key: String) {
+        let mut current_peer_key = self.info.peer_key.write().await;
+        *current_peer_key = Some(peer_key);
     }
 
     pub async fn send(&self, packet: String) -> Result<(), String> {

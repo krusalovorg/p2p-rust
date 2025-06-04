@@ -1,5 +1,5 @@
-use colored::*;
 use std::sync::Arc;
+use crate::logger;
 
 use crate::config::Config;
 use crate::connection::Connection;
@@ -13,8 +13,7 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub async fn new(db: &P2PDatabase) -> Self {
-        let config: Config = Config::from_file("config.toml");
+    pub async fn new(config: &Config, db: &P2PDatabase) -> Self {
         let connection_manager = Arc::new(ConnectionManager::new(db).await);
 
         let connection = Arc::new(
@@ -42,9 +41,9 @@ impl Peer {
 
     pub async fn run(&self) {
         let peer_id = self.db.get_or_create_peer_id().unwrap();
-        println!("{}", format!("[Peer] Your UUID: {}", peer_id).yellow());
+        logger::info(&format!("[Peer] Your UUID: {}", peer_id));
 
-        println!("[Peer] Starting peer...");
+        logger::info("[Peer] Starting peer...");
 
         self.connection_manager.handle_incoming_packets().await;
     }

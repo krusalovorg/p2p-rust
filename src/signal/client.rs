@@ -1,3 +1,5 @@
+use crate::config::Config;
+use crate::crypto::crypto::generate_uuid;
 use crate::db::P2PDatabase;
 use crate::packets::{PeerInfo, Protocol, TransportData, TransportPacket};
 use anyhow::Result;
@@ -22,17 +24,23 @@ pub struct SignalClient {
     db: Arc<P2PDatabase>,
     message_tx: mpsc::Sender<TransportPacket>,
     message_rx: Option<mpsc::Receiver<TransportPacket>>,
+    pub signal_server_ip: String,
+    pub signal_server_port: u16,
+    pub public_key: String,
 }
 
 impl SignalClient {
     pub fn new(db: &P2PDatabase) -> Self {
-        let (message_tx, message_rx) = mpsc::channel(100);
+        let (message_tx, message_rx) = mpsc::channel(1024);
         SignalClient {
             writer: None,
             reader: None,
             db: Arc::new(db.clone()),
             message_tx,
             message_rx: Some(message_rx),
+            signal_server_ip: "".to_string(),
+            signal_server_port: 0,
+            public_key: "".to_string(),
         }
     }
 
@@ -46,12 +54,16 @@ impl SignalClient {
         signal_server_port: i64,
         public_ip: &str,
         public_port: u16,
+        public_key: &str,
     ) -> Result<(), String> {
         println!(
             "[SignalClient] Connecting to signal server {}:{}",
             signal_server_ip, signal_server_port
         );
 
+        self.signal_server_ip = signal_server_ip.to_string();
+        self.signal_server_port = signal_server_port as u16;
+        self.public_key = public_key.to_string();
         match TcpStream::connect(format!("{}:{}", signal_server_ip, signal_server_port)).await {
             Ok(socket) => {
                 let (reader, writer) = split(socket);
@@ -109,16 +121,26 @@ impl SignalClient {
                     }
                 });
 
-                // Отправляем начальный пакет
+                let fragments = self.db.get_storage_fragments().unwrap();
+                let mut stored_files = Vec::new();
+                for fragment in fragments {
+                    stored_files.push(fragment.file_hash.clone());
+                }
+
                 let connect_packet = TransportPacket {
                     act: "info".to_string(),
                     to: None,
                     data: Some(TransportData::PeerInfo(PeerInfo {
-                        peer_id: self.db.get_or_create_peer_id().unwrap(),
+                        public_key: self.db.get_or_create_peer_id().unwrap(),
+                        total_space: self.db.get_total_space().unwrap_or(0),
+                        free_space: self.db.get_storage_free_space().await.unwrap_or(0),
+                        stored_files: stored_files,
+                        is_signal_server: true,
                     })),
-                    status: None,
                     protocol: Protocol::SIGNAL,
-                    uuid: self.db.get_or_create_peer_id().unwrap(),
+                    peer_key: self.db.get_or_create_peer_id().unwrap(),
+                    uuid: generate_uuid(),
+                    nodes: vec![],
                 };
 
                 self.send_packet(connect_packet).await?;
@@ -138,10 +160,10 @@ impl SignalClient {
         let len_bytes = message_len.to_be_bytes();
 
         if let Some(writer) = &self.writer {
-            println!(
-                "[SignalClient] Sending packet to signal server: {}",
-                string_packet
-            );
+            // println!(
+            //     "[SignalClient] Sending packet to signal server: {}",
+            //     string_packet
+            // );
 
             let mut writer_guard = writer.write().await;
             
