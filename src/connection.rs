@@ -9,6 +9,7 @@ use tokio::time::sleep;
 
 use crate::crypto::crypto::generate_uuid;
 use crate::packets::{Protocol, TransportPacket, TransportData, PeerInfo};
+use crate::crypto::signature::{sign_packet, verify_packet};
 use crate::db::P2PDatabase;
 
 const SHOW_LOGS: bool = false;
@@ -97,7 +98,7 @@ impl Connection {
         let reader = Arc::new(RwLock::new(reader));
         let writer = Arc::new(RwLock::new(writer));
 
-        let connect_packet = TransportPacket {
+        let mut connect_packet = TransportPacket {
             act: "info".to_string(),
             to: None,
             data: Some(
@@ -113,7 +114,11 @@ impl Connection {
             peer_key: db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
+
+        let mut signing_key = db.get_private_signing_key().unwrap();
+        let _ = sign_packet(&mut connect_packet, &signing_key);
 
         if let Err(e) = Self::write_packet(&writer, &connect_packet).await {
             log(&format!("[Connection] Failed to send connect packet: {}", e));
@@ -227,7 +232,7 @@ impl Connection {
         for fragment in fragments {
             stored_files.push(fragment.file_hash.clone());
         }
-        let connect_packet = TransportPacket {
+        let mut connect_packet = TransportPacket {
             act: "info".to_string(),
             to: None,
             data: Some(
@@ -243,7 +248,10 @@ impl Connection {
             peer_key: db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
+        let mut signing_key = db.get_private_signing_key().unwrap();
+        let _ = sign_packet(&mut connect_packet, &signing_key);
 
         Self::write_packet(writer, &connect_packet).await
     }
@@ -277,6 +285,10 @@ impl Connection {
         
         match serde_json::from_str(&data) {
             Ok(packet) => {
+                if let Err(e) = verify_packet(&packet) {
+                    log(&format!("[Connection] Signature verification failed: {}", e));
+                    return Err(e);
+                }
                 Ok(packet)
             }
             Err(e) => {
@@ -311,7 +323,9 @@ impl Connection {
         Self::send_peer_info_request(&self.writer, &self.db).await
     }
 
-    pub async fn send_packet(&self, packet: TransportPacket) -> Result<(), String> {
+    pub async fn send_packet(&self, mut packet: TransportPacket) -> Result<(), String> {
+        let mut signing_key = self.db.get_private_signing_key().unwrap();
+        let _ = sign_packet(&mut packet, &signing_key);
         match Self::write_packet(&self.writer, &packet).await {
             Ok(_) => Ok(()),
             Err(e) => {

@@ -50,6 +50,7 @@ impl ConnectionManager {
             peer_key: my_key.clone(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         println!("[DEBUG] Sending accept_connection packet: {:?}", packet);

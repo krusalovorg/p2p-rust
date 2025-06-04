@@ -23,6 +23,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.auto_send_packet(response_packet).await.map_err(|e| e.to_string())

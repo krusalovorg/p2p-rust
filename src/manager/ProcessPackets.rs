@@ -90,6 +90,7 @@ impl ConnectionManager {
                                     peer_key: self.db.get_or_create_peer_id().unwrap(),
                                     uuid: generate_uuid(),
                                     nodes: vec![],
+            signature: None,
                                 };
 
                                 let _ = self.auto_send_packet(packet_error).await;

@@ -151,6 +151,7 @@ pub mod packets {
         pub data: Option<TransportData>,
         pub protocol: Protocol,     // TURN, STUN, SIGNAL
         pub uuid: String,
+        pub signature: Option<String>,
     }
 
     impl std::fmt::Display for TransportPacket {

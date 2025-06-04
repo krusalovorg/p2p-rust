@@ -141,6 +141,7 @@ impl SignalClient {
                     peer_key: self.db.get_or_create_peer_id().unwrap(),
                     uuid: generate_uuid(),
                     nodes: vec![],
+            signature: None,
                 };
 
                 self.send_packet(connect_packet).await?;
