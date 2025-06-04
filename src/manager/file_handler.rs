@@ -166,6 +166,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: packet_id,
             nodes: vec![],
+            signature: None,
         };
 
         self.auto_send_packet(packet_feedback)
@@ -235,6 +236,7 @@ impl ConnectionManager {
                     peer_key: self.db.get_or_create_peer_id().unwrap(),
                     uuid: generate_uuid(),
                     nodes: vec![],
+            signature: None,
                 };
 
                 self.auto_send_packet(packet_feedback)
@@ -267,6 +269,7 @@ impl ConnectionManager {
                 peer_key: self.db.get_or_create_peer_id().unwrap(),
                 uuid: request_id.clone(),
                 nodes: vec![],
+            signature: None,
             };
 
             println!(
@@ -314,6 +317,7 @@ impl ConnectionManager {
                 peer_key: self.db.get_or_create_peer_id().unwrap(),
                 uuid: generate_uuid(),
                 nodes: vec![],
+            signature: None,
             };
 
             self.auto_send_packet(response)
@@ -444,6 +448,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.auto_send_packet(packet_feedback).await
@@ -510,6 +515,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.auto_send_packet(packet_feedback).await
@@ -574,6 +580,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.auto_send_packet(packet_feedback).await
@@ -669,6 +676,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.auto_send_packet(packet_feedback).await

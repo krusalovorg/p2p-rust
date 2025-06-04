@@ -25,6 +25,7 @@ pub async fn turn_tunnel(
             peer_key: db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
         let result = manager.auto_send_packet(packet_hello).await;
         println!(
@@ -48,6 +49,7 @@ pub async fn turn_tunnel(
             peer_key: db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
         println!("{}", "[TURN] [accept_connection] Sending accept connection".yellow());
         let result = manager.auto_send_packet(packet_hello).await;

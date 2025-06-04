@@ -73,6 +73,7 @@ pub async fn handle_http_proxy_response(
                 .generate_uuid()
                 .map_err(|e| format!("Failed to generate UUID: {}", e))?,
             nodes: vec![],
+            signature: None,
         };
 
         manager

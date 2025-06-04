@@ -479,6 +479,7 @@ impl SignalServer {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         let packet = serde_json::to_string(&packet).unwrap();
@@ -546,6 +547,7 @@ impl SignalServer {
                 peer_key: self.db.get_or_create_peer_id().unwrap(),
                 uuid: generate_uuid(),
                 nodes: vec![],
+            signature: None,
             };
             self.auto_send_packet(packet_request_sync_fragments).await;
         } else if message.act == "file" {
@@ -676,6 +678,7 @@ impl SignalServer {
                         peer_key: self.db.get_or_create_peer_id().unwrap(),
                         uuid: generate_uuid(),
                         nodes: vec![],
+            signature: None,
                     };
                     self.auto_send_packet(packet).await;
                 }
@@ -723,6 +726,7 @@ impl SignalServer {
                         peer_key: self.db.get_or_create_peer_id().unwrap(),
                         uuid: generate_uuid(),
                         nodes: vec![],
+            signature: None,
                     };
                     self.broadcast_to_servers(packet).await;
                 }
@@ -751,6 +755,7 @@ impl SignalServer {
                                 peer_key: self.db.get_or_create_peer_id().unwrap(),
                                 uuid: message.uuid.clone(),
                                 nodes: vec![],
+            signature: None,
                             };
 
                             self.auto_send_packet(response).await;
@@ -774,6 +779,7 @@ impl SignalServer {
                                 peer_key: self.db.get_or_create_peer_id().unwrap(),
                                 uuid: generate_uuid(),
                                 nodes: vec![],
+            signature: None,
                             };
                             self.auto_send_packet(packet).await;
                         }
@@ -864,6 +870,7 @@ impl SignalServer {
                                             peer_key: message.peer_key.to_string(),
                                             uuid: message.peer_key.to_string(),
                                             nodes: vec![],
+            signature: None,
                                         };
                                         let packet_json = serde_json::to_string(&packet).unwrap();
                                         target_peer.send(packet_json).await;
@@ -926,6 +933,7 @@ impl SignalServer {
                                     peer_key: message.peer_key.to_string(),
                                     uuid: message.peer_key.to_string(),
                                     nodes: vec![],
+            signature: None,
                                 };
                                 let turn_packet = serde_json::to_string(&turn_packet).unwrap();
                                 if let Err(e) = item.send(turn_packet).await {
@@ -1092,6 +1100,7 @@ impl SignalServer {
                     peer_key: about_peer.info.peer_key.read().await.clone().unwrap(),
                     uuid: generate_uuid(),
                     nodes: vec![],
+            signature: None,
                 };
                 let wait_packet = serde_json::to_string(&wait_packet).unwrap();
 
@@ -1139,6 +1148,7 @@ impl SignalServer {
                     peer_key: self.db.get_or_create_peer_id().unwrap(),
                     uuid: generate_uuid(),
                     nodes: vec![],
+            signature: None,
                 };
 
                 if let Err(e) = peer.send(serde_json::to_string(&packet).unwrap()).await {

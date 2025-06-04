@@ -93,6 +93,7 @@ impl PeerAPI {
             peer_key: my_peer_id,
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await
@@ -244,6 +245,7 @@ impl PeerAPI {
             peer_key: my_peer_id,
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.manager.auto_send_packet(packet).await;
@@ -277,6 +279,7 @@ impl PeerAPI {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.manager.auto_send_packet(packet).await
@@ -299,6 +302,7 @@ impl PeerAPI {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await
@@ -313,6 +317,7 @@ impl PeerAPI {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
         println!("{}", format!("[Peer] Sending peer list to signal server"));
         self.manager.auto_send_packet(packet).await
@@ -332,6 +337,7 @@ impl PeerAPI {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await
@@ -354,6 +360,7 @@ impl PeerAPI {
                 peer_key: self.db.get_or_create_peer_id().unwrap(),
                 uuid: generate_uuid(),
                 nodes: vec![],
+            signature: None,
             };
 
             self.connection.send_packet(packet).await
@@ -380,6 +387,7 @@ impl PeerAPI {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await
@@ -414,6 +422,7 @@ impl PeerAPI {
             peer_key: my_peer_id,
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await
@@ -443,6 +452,7 @@ impl PeerAPI {
             peer_key: my_peer_id,
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await
@@ -486,6 +496,7 @@ impl PeerAPI {
             peer_key: my_peer_id,
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await?;
@@ -581,6 +592,7 @@ impl PeerAPI {
             peer_key: my_peer_id,
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await
@@ -622,6 +634,7 @@ impl PeerAPI {
             peer_key: my_peer_id,
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         println!(
@@ -738,6 +751,7 @@ impl PeerAPI {
             peer_key: my_peer_id,
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.connection.send_packet(packet).await?;
@@ -771,6 +785,7 @@ impl PeerAPI {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid().clone(),
             nodes: vec![],
+            signature: None,
         };
 
         self.manager.auto_send_packet(packet).await

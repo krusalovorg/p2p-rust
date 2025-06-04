@@ -63,6 +63,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.auto_send_packet(response).await.map_err(|e| e.to_string())
@@ -96,6 +97,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         self.auto_send_packet(response).await.map_err(|e| e.to_string())
@@ -141,6 +143,7 @@ impl ConnectionManager {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: generate_uuid(),
             nodes: vec![],
+            signature: None,
         };
 
         let to_peer = packet.to.clone().unwrap();

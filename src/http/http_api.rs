@@ -231,6 +231,7 @@ impl HttpApi {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: request_id.clone(),
             nodes: vec![],
+            signature: None,
         };
 
         if let Err(e) = self.api_tx.send(packet).await {
@@ -341,6 +342,7 @@ impl HttpApi {
                             peer_key: self.db.get_or_create_peer_id().unwrap(),
                             uuid: request_id.clone(),
                             nodes: vec![],
+            signature: None,
                         };
 
                         let (search_tx, search_rx) = oneshot::channel();
@@ -477,6 +479,7 @@ impl HttpApi {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: request_id.clone(),
             nodes: vec![],
+            signature: None,
         };
         logger::debug(&format!(
             "[HTTP API] [DEBUG] Sending get_file packet: {:?}",
@@ -792,6 +795,7 @@ impl HttpApi {
             peer_key: my_peer_id,
             uuid: request_id.clone(),
             nodes: vec![],
+            signature: None,
         };
 
         logger::debug(&format!(
@@ -987,6 +991,7 @@ impl HttpApi {
             peer_key: my_peer_id,
             uuid: request_id.clone(),
             nodes: vec![],
+            signature: None,
         };
 
         logger::debug(&format!(
@@ -1074,6 +1079,7 @@ impl HttpApi {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: request_id.clone(),
             nodes: vec![],
+            signature: None,
         };
 
         if let Err(e) = self.api_tx.send(packet).await {
@@ -1155,6 +1161,7 @@ impl HttpApi {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: request_id.clone(),
             nodes: vec![],
+            signature: None,
         };
 
         if let Err(e) = self.api_tx.send(packet).await {
@@ -1230,6 +1237,7 @@ impl HttpApi {
             peer_key: self.db.get_or_create_peer_id().unwrap(),
             uuid: request_id.clone(),
             nodes: vec![],
+            signature: None,
         };
 
         if let Err(e) = self.api_tx.send(packet).await {

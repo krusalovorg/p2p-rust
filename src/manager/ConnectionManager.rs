@@ -4,6 +4,7 @@ use crate::db::P2PDatabase;
 use crate::http::http_proxy::HttpProxy;
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::{TransportData, TransportPacket};
+use crate::crypto::signature::sign_packet;
 use crate::peer::peer_api::PeerAPI;
 use crate::tunnel::Tunnel;
 use crate::ui::console_manager;
@@ -159,7 +160,9 @@ impl ConnectionManager {
         Ok(())
     }
 
-    pub async fn auto_send_packet(&self, packet: TransportPacket) -> Result<(), String> {
+    pub async fn auto_send_packet(&self, mut packet: TransportPacket) -> Result<(), String> {
+        let mut signing_key = self.db.get_private_signing_key().unwrap();
+        let _ = sign_packet(&mut packet, &signing_key);
         let mut sended_by_uuid = false;
 
         if let Some(to) = &packet.to {

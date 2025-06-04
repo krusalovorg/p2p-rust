@@ -282,6 +282,7 @@ pub struct TransportPacket {
     pub peer_key: String,
     pub uuid: String,
     pub nodes: Vec<SearchPathNode>, // ноды через которых прошел пакет
+    pub signature: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
