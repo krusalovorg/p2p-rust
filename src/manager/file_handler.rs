@@ -4,9 +4,7 @@ use crate::crypto::crypto::generate_uuid;
 use crate::crypto::token::validate_signature_token;
 use crate::db::{P2PDatabase, Storage};
 use crate::packets::{
-    EncryptedData, FileData, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet,
-    PeerFileMove, PeerFileSaved, PeerFileUpdate, PeerUploadFile, Protocol, TransportData,
-    TransportPacket,
+    ContractExecutionRequest, ContractExecutionResponse, EncryptedData, FileData, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove, PeerFileSaved, PeerFileUpdate, PeerUploadFile, Protocol, TransportData, TransportPacket
 };
 use colored::*;
 use hex;
@@ -21,16 +19,13 @@ impl ConnectionManager {
         db: &P2PDatabase,
         data: PeerUploadFile,
         packet_id: String,
-        connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         println!("Get token for peer: {}", data.peer_id);
 
         let (token_info, token_hash, validated_token) = if data.public {
-            // Для публичных файлов используем пустой токен
             (None, "".to_string(), None)
         } else {
-            // Для приватных файлов проверяем токен
             let token_info = self.db.get_token(&data.peer_id)
                 .map_err(|e| format!("Ошибка при проверке токена в базе данных: {}", e))?
                 .ok_or_else(|| "Токен не найден в базе данных. Возможно, он был отозван или истек срок его действия".to_string())?;
@@ -139,6 +134,7 @@ impl ConnectionManager {
                 size: final_contents.len() as u64,
                 tags: vec![],
                 groups: vec![],
+                is_contract: data.is_contract,
             })
             .map_err(|e| format!("Ошибка при добавлении информации о фрагменте: {}", e))?;
 
@@ -164,6 +160,7 @@ impl ConnectionManager {
                 public: data.public,
                 size: final_contents.len() as u64,
                 mime: data.mime,
+                is_contract: data.is_contract,
             })),
             protocol: Protocol::TURN,
             peer_key: self.db.get_or_create_peer_id().unwrap(),
@@ -171,20 +168,16 @@ impl ConnectionManager {
             nodes: vec![],
         };
 
-        connection
-            .send_packet(packet_feedback)
+        self.auto_send_packet(packet_feedback)
             .await
             .map_err(|e| format!("Ошибка при отправке подтверждения: {}", e))?;
 
-        connection
-            .send_peer_info_request_self()
-            .await
-            .map_err(|e| {
-                format!(
-                    "Ошибка при отправке запроса на синхронизацию метаданных фрагментов: {}",
-                    e
-                )
-            })?;
+        self.auto_send_peer_info().await.map_err(|e| {
+            format!(
+                "Ошибка при отправке запроса на синхронизацию метаданных фрагментов: {}",
+                e
+            )
+        })?;
         Ok(())
     }
 
@@ -206,6 +199,7 @@ impl ConnectionManager {
             size: data.size,
             tags: vec![],
             groups: vec![],
+            is_contract: data.is_contract.clone(),
         });
 
         println!(
@@ -219,7 +213,6 @@ impl ConnectionManager {
         &self,
         request_id: String,
         data: PeerFileGet,
-        connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         let contents = self
@@ -244,8 +237,7 @@ impl ConnectionManager {
                     nodes: vec![],
                 };
 
-                connection
-                    .send_packet(packet_feedback)
+                self.auto_send_packet(packet_feedback)
                     .await
                     .map_err(|e| e.to_string())?;
                 return Err("Token is not valid".to_string());
@@ -281,12 +273,55 @@ impl ConnectionManager {
                 "{}",
                 format!("[Peer] Sending file: {}", fragment.filename.clone()).cyan()
             );
-            connection
-                .send_packet(packet_file)
+            self.auto_send_packet(packet_file)
                 .await
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    pub async fn handle_contract_execution_request(
+        &self,
+        request: ContractExecutionRequest,
+    ) -> Result<(), String> {
+        // Получаем путь к контракту из базы данных
+        let contract = self
+            .db
+            .search_fragment_in_virtual_storage(&request.contract_hash, None)
+            .map_err(|e| format!("Failed to get contract path: {}", e))?;
+
+        if contract.first().unwrap().is_contract {
+            let paths_to_blob_contract = format!("{}/blobs/{}", self.db.path.as_str(), contract.first().unwrap().file_hash);
+            let result = crate::contract::runtime::execute_contract_with_payload(
+                &paths_to_blob_contract,
+                &request.function_name,
+                &request.payload,
+            )
+            .map_err(|e| format!("Failed to execute contract: {}", e))?;
+
+            // Отправляем ответ
+            let response = TransportPacket {
+                act: "contract_execution_response".to_string(),
+                to: Some(request.peer_id),
+                data: Some(TransportData::ContractExecutionResponse(
+                    ContractExecutionResponse {
+                        contract_hash: request.contract_hash,
+                        result,
+                        peer_id: self.db.get_or_create_peer_id().unwrap(),
+                    },
+                )),
+                protocol: Protocol::SIGNAL,
+                peer_key: self.db.get_or_create_peer_id().unwrap(),
+                uuid: generate_uuid(),
+                nodes: vec![],
+            };
+
+            self.auto_send_packet(response)
+                .await
+                .map_err(|e| e.to_string())
+        } else {
+            Err("Contract not found".to_string())
+        }
     }
 
     pub async fn handle_file_data(&self, data: FileData) -> Result<(), String> {
@@ -344,7 +379,6 @@ impl ConnectionManager {
     pub async fn handle_file_access_change(
         &self,
         data: PeerFileAccessChange,
-        connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         let fragments = self
@@ -412,13 +446,12 @@ impl ConnectionManager {
             nodes: vec![],
         };
 
-        connection.send_packet(packet_feedback).await
+        self.auto_send_packet(packet_feedback).await
     }
 
     pub async fn handle_file_delete(
         &self,
         data: PeerFileDelete,
-        connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         let fragments = self
@@ -479,13 +512,12 @@ impl ConnectionManager {
             nodes: vec![],
         };
 
-        connection.send_packet(packet_feedback).await
+        self.auto_send_packet(packet_feedback).await
     }
 
     pub async fn handle_file_move(
         &self,
         data: PeerFileMove,
-        connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         let fragments = self
@@ -544,13 +576,12 @@ impl ConnectionManager {
             nodes: vec![],
         };
 
-        connection.send_packet(packet_feedback).await
+        self.auto_send_packet(packet_feedback).await
     }
 
     pub async fn handle_file_update(
         &self,
         data: PeerFileUpdate,
-        connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         let fragments = self
@@ -640,6 +671,6 @@ impl ConnectionManager {
             nodes: vec![],
         };
 
-        connection.send_packet(packet_feedback).await
+        self.auto_send_packet(packet_feedback).await
     }
 }

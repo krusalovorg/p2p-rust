@@ -22,12 +22,11 @@ mod commands;
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;
 use crate::ui::{print_all_files, print_welcome, print_all_fragments};
-use crate::contract::runtime::hardcoded_test_contract;
 use crate::commands::create_base_commands;
 
 #[tokio::main]
 async fn main() {
-    hardcoded_test_contract();
+    logger::set_log_file(None);
     let matches = create_base_commands().get_matches();
     let db_path = get_db_path(&matches);
 

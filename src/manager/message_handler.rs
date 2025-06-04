@@ -1,6 +1,6 @@
 use super::ConnectionManager::ConnectionManager;
 use crate::{
-    connection::Connection, crypto::crypto::generate_uuid, packets::{Message, Protocol, TransportData, TransportPacket}
+    crypto::crypto::generate_uuid, packets::{Message, Protocol, TransportData, TransportPacket}
 };
 use colored::*;
 
@@ -8,7 +8,6 @@ impl ConnectionManager {
     pub async fn handle_message(
         &self,
         data: Message,
-        connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         println!("{}", format!("[Peer] Message: {}", data.text).green());
@@ -26,10 +25,7 @@ impl ConnectionManager {
             nodes: vec![],
         };
 
-        connection
-            .send_packet(response_packet)
-            .await
-            .map_err(|e| e.to_string())
+        self.auto_send_packet(response_packet).await.map_err(|e| e.to_string())
     }
 
     pub async fn handle_message_response(&self) -> Result<(), String> {

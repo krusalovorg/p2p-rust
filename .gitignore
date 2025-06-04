@@ -23,3 +23,5 @@ Cargo.lock
 # Storage directories
 storage/
 storage-2/
+wallet/node_modules/
+wallet/dist/

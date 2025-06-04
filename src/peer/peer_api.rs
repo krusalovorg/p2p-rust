@@ -4,7 +4,11 @@ use crate::crypto::token::get_metadata_from_token;
 use crate::db::P2PDatabase;
 use crate::manager::ConnectionManager::ConnectionManager;
 use crate::packets::{
-    EncryptedData, FragmentMetadata, FragmentMetadataSync, GetFragmentsMetadata, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove, PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol, SearchPathNode, StorageReservationRequest, StorageValidTokenRequest, TransportData, TransportPacket, PeerFileUpdate
+    ContractExecutionRequest, EncryptedData, FragmentMetadata, FragmentMetadataSync,
+    GetFragmentsMetadata, Message, PeerFileAccessChange, PeerFileDelete, PeerFileGet, PeerFileMove,
+    PeerFileUpdate, PeerSearchRequest, PeerUploadFile, PeerWaitConnection, Protocol,
+    SearchPathNode, StorageReservationRequest, StorageValidTokenRequest, TransportData,
+    TransportPacket,
 };
 use crate::tunnel::Tunnel;
 use colored::Colorize;
@@ -115,6 +119,7 @@ impl PeerAPI {
         public: bool,
         auto_decompress: bool,
         root_dir: &str,
+        is_contract: bool,
     ) -> Result<(), UploadError> {
         println!("Uploading file: {}", file_path);
         let file_size = tokio::fs::metadata(&file_path)
@@ -160,7 +165,7 @@ impl PeerAPI {
                 .map_err(|e| UploadError::IoError(format!("Failed to connect to peer: {}", e)))?;
 
             let mut attempts = 0;
-            let max_attempts = 30;
+            let max_attempts = 4;
 
             while attempts < max_attempts {
                 if self
@@ -170,14 +175,12 @@ impl PeerAPI {
                 {
                     break;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                 attempts += 1;
             }
 
             if attempts >= max_attempts {
-                return Err(UploadError::IoError(
-                    "Failed to establish connection with peer".to_string(),
-                ));
+                println!("Failed to establish connection with peer, send file use turn protocol");
             }
         }
 
@@ -235,6 +238,7 @@ impl PeerAPI {
                 encrypted,
                 compressed: true,
                 auto_decompress,
+                is_contract,
             })),
             protocol: Protocol::TURN,
             peer_key: my_peer_id,
@@ -242,10 +246,7 @@ impl PeerAPI {
             nodes: vec![],
         };
 
-        self.connection
-            .send_packet(packet)
-            .await
-            .map_err(|e| UploadError::IoError(e.to_string()))?;
+        self.manager.auto_send_packet(packet).await;
 
         self.db
             .update_token_used_space(&owner_peer_id, used_space + file_size)
@@ -254,8 +255,14 @@ impl PeerAPI {
         Ok(())
     }
 
+    pub async fn upload_contract(&self, contract_path: String) -> Result<(), UploadError> {
+        self.upload_file(contract_path, false, true, true, "", true)
+            .await
+    }
+
     pub async fn upload_file_default(&self, file_path: String) -> Result<(), UploadError> {
-        self.upload_file(file_path, true, false, false, "").await
+        self.upload_file(file_path, true, false, false, "", false)
+            .await
     }
 
     pub async fn send_message(&self, peer_id: String, message: String) -> Result<(), String> {
@@ -272,7 +279,7 @@ impl PeerAPI {
             nodes: vec![],
         };
 
-        self.connection.send_packet(packet).await
+        self.manager.auto_send_packet(packet).await
     }
 
     pub async fn connect_to_peer(&self, peer_id: String) -> Result<(), String> {
@@ -308,7 +315,7 @@ impl PeerAPI {
             nodes: vec![],
         };
         println!("{}", format!("[Peer] Sending peer list to signal server"));
-        self.connection.send_packet(packet).await
+        self.manager.auto_send_packet(packet).await
     }
 
     pub async fn reserve_storage(&self, size_in_bytes: u64) -> Result<(), String> {
@@ -540,7 +547,14 @@ impl PeerAPI {
                 format!("Загрузка файла {}/{}: {}", i + 1, files.len(), file).yellow()
             );
             if let Err(e) = self
-                .upload_file(file.clone(), encrypt, public, auto_decompress, &dir_path)
+                .upload_file(
+                    file.clone(),
+                    encrypt,
+                    public,
+                    auto_decompress,
+                    &dir_path,
+                    false,
+                )
                 .await
             {
                 println!(
@@ -591,6 +605,7 @@ impl PeerAPI {
                 owner_key: f.owner_key,
                 storage_peer_key: f.storage_peer_key,
                 size: f.size,
+                is_contract: f.is_contract,
             })
             .collect();
 
@@ -633,18 +648,25 @@ impl PeerAPI {
         println!("Размер файла: {}", file_size);
 
         // Получаем информацию о текущем файле
-        let fragments = self.db.get_my_fragments()
+        let fragments = self
+            .db
+            .get_my_fragments()
             .map_err(|e| format!("Ошибка при получении фрагментов: {}", e))?;
-        
-        let fragment = fragments.iter()
+
+        let fragment = fragments
+            .iter()
             .find(|f| f.file_hash == file_hash)
             .ok_or_else(|| format!("Файл с хешем {} не найден", file_hash))?;
 
-        let token_info = self.db.get_token(&fragment.storage_peer_key)
+        let token_info = self
+            .db
+            .get_token(&fragment.storage_peer_key)
             .map_err(|e| format!("Ошибка при получении токена: {}", e))?
             .ok_or_else(|| "Токен не найден".to_string())?;
 
-        let used_space = self.db.get_token_used_space(&fragment.storage_peer_key)
+        let used_space = self
+            .db
+            .get_token_used_space(&fragment.storage_peer_key)
             .map_err(|e| format!("Ошибка при получении использованного места: {}", e))?;
 
         if used_space + file_size > token_info.free_space && !public {
@@ -666,14 +688,18 @@ impl PeerAPI {
 
         // Сжимаем содержимое
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&contents)
+        encoder
+            .write_all(&contents)
             .map_err(|e| format!("Ошибка при сжатии файла: {}", e))?;
-        let compressed_contents = encoder.finish()
+        let compressed_contents = encoder
+            .finish()
             .map_err(|e| format!("Ошибка при завершении сжатия: {}", e))?;
 
         // Шифруем содержимое если нужно
         let (final_content, encrypted) = if encrypt {
-            let encrypted_contents = self.db.encrypt_data(&compressed_contents)
+            let encrypted_contents = self
+                .db
+                .encrypt_data(&compressed_contents)
                 .map_err(|e| format!("Ошибка при шифровании: {}", e))?;
 
             let content = serde_json::to_string(&EncryptedData {
@@ -686,7 +712,9 @@ impl PeerAPI {
             (compressed_contents, false)
         };
 
-        let my_peer_id = self.db.get_or_create_peer_id()
+        let my_peer_id = self
+            .db
+            .get_or_create_peer_id()
             .map_err(|e| format!("Ошибка при получении peer_id: {}", e))?;
 
         let mime = mime_guess::from_path(new_file_path.clone()).first_or_text_plain();
@@ -715,9 +743,36 @@ impl PeerAPI {
         self.connection.send_packet(packet).await?;
 
         // Обновляем информацию об использованном месте
-        self.db.update_token_used_space(&fragment.storage_peer_key, used_space + file_size)
+        self.db
+            .update_token_used_space(&fragment.storage_peer_key, used_space + file_size)
             .map_err(|e| format!("Ошибка при обновлении использованного места: {}", e))?;
 
         Ok(())
+    }
+
+    pub async fn call_contract(
+        &self,
+        contract_hash: String,
+        function_name: String,
+        payload: Vec<u8>,
+    ) -> Result<(), String> {
+        let packet = TransportPacket {
+            act: "request_contract".to_string(),
+            to: None,
+            data: Some(TransportData::ContractExecutionRequest(
+                ContractExecutionRequest {
+                    contract_hash: contract_hash.clone(),
+                    function_name,
+                    payload,
+                    peer_id: self.db.get_or_create_peer_id().unwrap(),
+                },
+            )),
+            protocol: Protocol::SIGNAL,
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: generate_uuid().clone(),
+            nodes: vec![],
+        };
+
+        self.manager.auto_send_packet(packet).await
     }
 }

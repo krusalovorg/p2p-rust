@@ -10,18 +10,31 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 pub fn print_welcome() {
-    println!("\n{}", r#"
+    println!(
+        "\n{}",
+        r#"
     ██╗     ██╗████████╗███████╗    ██████╗ ███████╗███████╗██████╗ 
     ██║     ██║╚══██╔══╝██╔════╝    ██╔══██╗██╔════╝██╔════╝██╔══██╗
     ██║     ██║   ██║   █████╗      ██████╔╝█████╗  █████╗  ██████╔╝
     ██║     ██║   ██║   ██╔══╝      ██╔═══╝ ██╔══╝  ██╔══╝  ██╔══██╗
     ███████╗██║   ██║   ███████╗    ██║     ███████╗███████╗██║  ██║
     ╚══════╝╚═╝   ╚═╝   ╚══════╝    ╚═╝     ╚══════╝╚══════╝╚═╝  ╚═╝
-    "#.bright_blue());
-    println!("{}", "                    P2P File Sharing Network".bright_cyan());
-    println!("{}", "                    Version 2.1.1".bright_yellow());
-    println!("\n{}", "Добро пожаловать в LITE PEER TO LITE NODE!".bright_green());
-    println!("{}", "Введите 'help' для просмотра доступных команд\n".bright_white());
+    "#
+        .bright_blue()
+    );
+    println!(
+        "{}",
+        "                    P2P File Sharing Network".bright_cyan()
+    );
+    println!("{}", "                    Version 2.1.2".bright_yellow());
+    println!(
+        "\n{}",
+        "Добро пожаловать в LITE PEER TO LITE NODE!".bright_green()
+    );
+    println!(
+        "{}",
+        "Введите 'help' для просмотра доступных команд\n".bright_white()
+    );
 }
 
 pub fn print_all_files(db: &P2PDatabase) {
@@ -34,10 +47,18 @@ pub fn print_all_files(db: &P2PDatabase) {
         Ok(myfiles) => {
             println!("{}", "My Files:".bold().underline().blue());
             for fragment in myfiles {
-                println!("  {}: {}", "Storage Peer UUID".yellow(), fragment.storage_peer_key);
+                println!(
+                    "  {}: {}",
+                    "Storage Peer UUID".yellow(),
+                    fragment.storage_peer_key
+                );
                 println!("  {}: {}", "Token".yellow(), fragment.token);
                 println!("  {}: {}", "Filename".yellow(), fragment.filename);
-                println!("  {}: {}", "UUID Fragment (key db)".yellow(), fragment.file_hash);
+                println!(
+                    "  {}: {}",
+                    "UUID Fragment (key db)".yellow(),
+                    fragment.file_hash
+                );
                 println!("  {}: {}", "Size".yellow(), fragment.size);
                 println!("  {}: {}", "Mime".yellow(), fragment.mime);
                 println!("  {}: {}", "Public".yellow(), fragment.public);
@@ -136,7 +157,11 @@ pub async fn print_tokens_info(db: &P2PDatabase) {
             println!(
                 "{} {}",
                 "║ Доступно:".cyan(),
-                format!("{:>38} байт ║", token_info.free_space - token_info.used_space).white()
+                format!(
+                    "{:>38} байт ║",
+                    token_info.free_space - token_info.used_space
+                )
+                .white()
             );
 
             let timestamp = token_info.timestamp;
@@ -182,41 +207,66 @@ pub async fn print_tokens_info(db: &P2PDatabase) {
 }
 
 pub fn print_all_commands() {
-    let width = 75; 
+    let width = 75;
     let horizontal_line = "═".repeat(width - 2);
     let top_border = format!("╔{}╗", horizontal_line);
     let middle_border = format!("╠{}╣", horizontal_line);
     let bottom_border = format!("╚{}╝", horizontal_line);
-    
+
     let commands = vec![
         ("files", "Список всех ваших файлов"),
         ("fragments", "Список всех ваших фрагментов"),
         ("tokens", "Показать все токены и их метаданные"),
         ("peers", "Список всех пиров"),
-        ("virtual_storage", "Интерактивное управление виртуальным хранилищем"),
-        ("sync_fragments", "Синхронизировать метаданные фрагментов с сервером"),
+        (
+            "virtual_storage",
+            "Интерактивное управление виртуальным хранилищем",
+        ),
+        (
+            "sync_fragments",
+            "Синхронизировать метаданные фрагментов с сервером",
+        ),
         ("search_peer <peer_id>", "Поиск конкретного пира"),
         ("connect <peer_id>", "Подключиться к пиру"),
         ("send_all <message>", "Отправить сообщение всем пирам"),
         ("<message>", "Отправить сообщение пиру"),
         ("get <session_key>", "Получить файл от пира"),
         ("upload <file_path>", "Загрузить файл на пир"),
-        ("update <file_hash> <file_path>", "Обновить существующий файл"),
+        (
+            "update <file_hash> <file_path>",
+            "Обновить существующий файл",
+        ),
         ("reserve <size_in_bytes>", "Зарезервировать место на пирах"),
         ("valid_token <token>", "Проверить токен хранилища"),
-        ("set_public <file_hash> <true/false>", "Изменить публичный доступ к файлу"),
+        (
+            "set_public <file_hash> <true/false>",
+            "Изменить публичный доступ к файлу",
+        ),
         ("delete <file_hash>", "Удалить файл"),
+        ("call_contract <contract_hash> <function_name> <data>", "Вызвать контракт с указанными данными"),
+        ("get_private_key", "Получить приватный ключ"),
         ("help", "Показать доступные команды"),
     ];
 
     println!("\n{}", top_border.bright_blue());
-    println!("{}", format!("║{:^width$}║", "Доступные команды:", width = width - 2).bright_blue());
+    println!(
+        "{}",
+        format!("║{:^width$}║", "Доступные команды:", width = width - 2).bright_blue()
+    );
     println!("{}", middle_border.bright_blue());
 
     for (cmd, desc) in commands {
-        println!("{}", format!("║  {:<30} - {:<25} ║", cmd.bright_green(), desc.bright_white()).bright_blue());
+        println!(
+            "{}",
+            format!(
+                "║  {:<30} - {:<25} ║",
+                cmd.bright_green(),
+                desc.bright_white()
+            )
+            .bright_blue()
+        );
     }
-    
+
     println!("{}", bottom_border.bright_blue());
     println!();
 }
@@ -234,17 +284,23 @@ pub async fn console_manager(
 
     if trimmed_input == "help" {
         print_all_commands();
+    } else if trimmed_input == "get_private_key" {
+        let private_key = hex::encode(db.get_private_key().unwrap().to_bytes());
+        println!("{}", format!("[Peer] Приватный ключ: {}", private_key).green());
     } else if trimmed_input.starts_with("update ") {
         let args: Vec<&str> = trimmed_input.split_whitespace().collect();
         if args.len() != 3 {
-            println!("{}", "[Peer] Использование: update <file_hash> <путь_к_новому_файлу>".red());
+            println!(
+                "{}",
+                "[Peer] Использование: update <file_hash> <путь_к_новому_файлу>".red()
+            );
             return;
         }
         let file_hash = args[1].to_string();
         let new_file_path = args[2].to_string();
 
         println!("\n{}", "Настройка параметров обновления:".cyan());
-        
+
         print!("{}", "Шифровать файл? (y/n): ".yellow());
         io::stdout().flush().unwrap();
         let mut input = String::new();
@@ -257,26 +313,55 @@ pub async fn console_manager(
         std::io::stdin().read_line(&mut input).unwrap();
         let public = input.trim().to_lowercase() == "y";
 
-        print!("{}", "Декомпрессировать файл после загрузки? (y/n): ".yellow());
+        print!(
+            "{}",
+            "Декомпрессировать файл после загрузки? (y/n): ".yellow()
+        );
         io::stdout().flush().unwrap();
         input.clear();
         std::io::stdin().read_line(&mut input).unwrap();
         let decompress = input.trim().to_lowercase() == "y";
 
         println!("\n{}", "Параметры обновления:".cyan());
-        println!("{}", format!("Шифрование: {}", if encrypted { "включено" } else { "выключено" }).yellow());
-        println!("{}", format!("Публичный доступ: {}", if public { "да" } else { "нет" }).yellow());
-        println!("{}", format!("Декомпрессия: {}", if decompress { "да" } else { "нет" }).yellow());
+        println!(
+            "{}",
+            format!(
+                "Шифрование: {}",
+                if encrypted {
+                    "включено"
+                } else {
+                    "выключено"
+                }
+            )
+            .yellow()
+        );
+        println!(
+            "{}",
+            format!("Публичный доступ: {}", if public { "да" } else { "нет" }).yellow()
+        );
+        println!(
+            "{}",
+            format!("Декомпрессия: {}", if decompress { "да" } else { "нет" }).yellow()
+        );
         println!();
 
-        if let Err(e) = api.update_file(file_hash, new_file_path, encrypted, public, decompress).await {
-            println!("{}", format!("[Peer] Ошибка при обновлении файла: {}", e).red());
+        if let Err(e) = api
+            .update_file(file_hash, new_file_path, encrypted, public, decompress)
+            .await
+        {
+            println!(
+                "{}",
+                format!("[Peer] Ошибка при обновлении файла: {}", e).red()
+            );
         } else {
             println!("{}", "[Peer] Файл успешно обновлен".green());
         }
     } else if trimmed_input == "virtual_storage" {
         if let Err(e) = api.virtual_storage_interactive().await {
-            println!("{}", format!("[Peer] Ошибка в виртуальном хранилище: {}", e).red());
+            println!(
+                "{}",
+                format!("[Peer] Ошибка в виртуальном хранилище: {}", e).red()
+            );
         }
     } else if trimmed_input == "files" {
         print_all_files(db);
@@ -286,18 +371,27 @@ pub async fn console_manager(
         print_tokens_info(db).await;
     } else if trimmed_input == "peers" {
         if let Err(e) = api.request_peer_list().await {
-            println!("{}", format!("[Peer] Failed to request peer list: {}", e).red());
+            println!(
+                "{}",
+                format!("[Peer] Failed to request peer list: {}", e).red()
+            );
         }
     } else if trimmed_input == "sync_fragments" {
         if let Err(e) = api.sync_fragment_metadata().await {
-            println!("{}", format!("[Peer] Ошибка при синхронизации фрагментов: {}", e).red());
+            println!(
+                "{}",
+                format!("[Peer] Ошибка при синхронизации фрагментов: {}", e).red()
+            );
         } else {
             println!("{}", "[Peer] Синхронизация фрагментов запущена".green());
         }
     } else if trimmed_input.starts_with("set_public ") {
         let args: Vec<&str> = trimmed_input.split_whitespace().collect();
         if args.len() != 3 {
-            println!("{}", "[Peer] Использование: set_public <file_hash> <true/false>".red());
+            println!(
+                "{}",
+                "[Peer] Использование: set_public <file_hash> <true/false>".red()
+            );
             return;
         }
         let file_hash = args[1].to_string();
@@ -305,17 +399,50 @@ pub async fn console_manager(
             "true" => true,
             "false" => false,
             _ => {
-                println!("{}", "[Peer] Значение public должно быть true или false".red());
+                println!(
+                    "{}",
+                    "[Peer] Значение public должно быть true или false".red()
+                );
                 return;
             }
         };
         if let Err(e) = api.change_file_public_access(file_hash, public).await {
-            println!("{}", format!("[Peer] Ошибка при изменении доступа: {}", e).red());
+            println!(
+                "{}",
+                format!("[Peer] Ошибка при изменении доступа: {}", e).red()
+            );
         }
     } else if trimmed_input.starts_with("delete ") {
         let file_hash = trimmed_input.strip_prefix("delete ").unwrap();
         if let Err(e) = api.delete_file(file_hash.to_string()).await {
-            println!("{}", format!("[Peer] Ошибка при удалении файла: {}", e).red());
+            println!(
+                "{}",
+                format!("[Peer] Ошибка при удалении файла: {}", e).red()
+            );
+        }
+    } else if trimmed_input.starts_with("call_contract ") {
+        let args: Vec<&str> = trimmed_input.split_whitespace().collect();
+        if args.len() < 4 {
+            println!(
+                "{}",
+                "[Peer] Использование: call_contract <contract_hash> <function_name> <data>".red()
+            );
+            return;
+        }
+        
+        let contract_hash = args[1].to_string();
+        let function_name = args[2].to_string();
+        let data = args[3..].join(" ");
+
+        println!("{}", format!("[Peer] Вызов контракта {} функции {} с данными: {}", contract_hash, function_name, data).cyan());
+        
+        if let Err(e) = api.call_contract(contract_hash, function_name, data.into_bytes()).await {
+            println!(
+                "{}",
+                format!("[Peer] Ошибка при вызове контракта: {}", e).red()
+            );
+        } else {
+            println!("{}", "[Peer] Контракт успешно вызван".green());
         }
     } else if trimmed_input.starts_with("search_peer ") {
         let peer_id = trimmed_input.strip_prefix("search_peer ").unwrap();
@@ -396,7 +523,10 @@ pub async fn console_manager(
         let is_directory = path.is_dir();
 
         if is_directory {
-            print!("{}", "Вы указали путь к директории. Загрузить все файлы? (y/n): ".yellow());
+            print!(
+                "{}",
+                "Вы указали путь к директории. Загрузить все файлы? (y/n): ".yellow()
+            );
             io::stdout().flush().unwrap();
             let mut input = String::new();
             std::io::stdin().read_line(&mut input).unwrap();
@@ -404,62 +534,172 @@ pub async fn console_manager(
                 println!("{}", "Загрузка отменена".red());
                 return;
             }
+        } else {
+            if let Some(ext) = path.extension() {
+                if ext == "wasm" {
+                    print!(
+                        "{}",
+                        "Обнаружен WASM файл. Загрузить как контракт? (y/n): ".yellow()
+                    );
+                    io::stdout().flush().unwrap();
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).unwrap();
+                    if input.trim().to_lowercase() == "y" {
+                        if let Err(e) = api.upload_contract(file_path.to_string()).await {
+                            println!(
+                                "{}",
+                                format!("[Peer] Ошибка при загрузке контракта: {}", e).red()
+                            );
+                        } else {
+                            println!(
+                                "{}",
+                                "[Peer] Запрос на загрузку контракта отправлен".green()
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
         }
 
         println!("\n{}", "Настройка параметров загрузки:".cyan());
-        
-        // Запрос на шифрование
+
         print!("{}", "Шифровать файлы? (y/n): ".yellow());
         io::stdout().flush().unwrap();
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();
         let encrypted = input.trim().to_lowercase() == "y";
 
-        // Запрос на публичный доступ
         print!("{}", "Сделать файлы публичными? (y/n): ".yellow());
         io::stdout().flush().unwrap();
         input.clear();
         std::io::stdin().read_line(&mut input).unwrap();
         let public = input.trim().to_lowercase() == "y";
 
-        // Запрос на декомпрессию
-        print!("{}", "Декомпрессировать файлы после загрузки? (y/n): ".yellow());
+        print!(
+            "{}",
+            "Декомпрессировать файлы после загрузки? (y/n): ".yellow()
+        );
         io::stdout().flush().unwrap();
         input.clear();
         std::io::stdin().read_line(&mut input).unwrap();
         let decompress = input.trim().to_lowercase() == "y";
 
         println!("\n{}", "Параметры загрузки:".cyan());
-        println!("{}", format!("Шифрование: {}", if encrypted { "включено" } else { "выключено" }).yellow());
-        println!("{}", format!("Публичный доступ: {}", if public { "да" } else { "нет" }).yellow());
-        println!("{}", format!("Декомпрессия: {}", if decompress { "да" } else { "нет" }).yellow());
+        println!(
+            "{}",
+            format!(
+                "Шифрование: {}",
+                if encrypted {
+                    "включено"
+                } else {
+                    "выключено"
+                }
+            )
+            .yellow()
+        );
+        println!(
+            "{}",
+            format!("Публичный доступ: {}", if public { "да" } else { "нет" }).yellow()
+        );
+        println!(
+            "{}",
+            format!("Декомпрессия: {}", if decompress { "да" } else { "нет" }).yellow()
+        );
         println!();
 
         if is_directory {
-            if let Err(e) = api.upload_directory(file_path.to_string(), encrypted, public, decompress).await {
-                println!("{}", format!("[Peer] Ошибка при загрузке директории: {}", e).red());
-            }
-        } else {
-            if let Err(e) = api.upload_file(file_path.to_string(), encrypted, public, decompress, "").await {
-                println!("{}", format!("[Peer] Ошибка при загрузке файла: {}", e).red());
-            } else {
-                println!("{}", "[Peer] Файл успешно загружен".green());
-            }
-        }
-    } else if connections_turn.len() > 0 {
-        let connections = connections_turn.iter();
-        for entry in connections {
             if let Err(e) = api
-                .send_message(entry.key().clone(), trimmed_input.to_string())
+                .upload_directory(file_path.to_string(), encrypted, public, decompress)
                 .await
             {
                 println!(
                     "{}",
-                    format!("[Peer] Failed to send message to {}: {}", entry.key(), e).red()
+                    format!("[Peer] Ошибка при загрузке директории: {}", e).red()
                 );
             }
+        } else {
+            if let Err(e) = api
+                .upload_file(
+                    file_path.to_string(),
+                    encrypted,
+                    public,
+                    decompress,
+                    "",
+                    false,
+                )
+                .await
+            {
+                println!(
+                    "{}",
+                    format!("[Peer] Ошибка при загрузке файла: {}", e).red()
+                );
+            } else {
+                println!("{}", "[Peer] Запрос на загрузку файла отправлен".green());
+            }
+        }
+    } else if connections_turn.len() > 0 {
+        let connections = connections_turn.iter();
+        let mut available_peers: Vec<String> = Vec::new();
+
+        // Собираем список доступных пиров
+        for entry in connections {
+            if entry.key() != &api.db.get_or_create_peer_id().unwrap() {
+                available_peers.push(entry.key().clone());
+            }
+        }
+
+        if available_peers.is_empty() {
+            println!("{}", "Нет доступных пиров для отправки сообщения".red());
+            return;
+        }
+
+        // Выводим список доступных пиров
+        println!("Доступные пиры для отправки сообщения:");
+        for (i, peer) in available_peers.iter().enumerate() {
+            println!("{}. {}", i + 1, peer);
+        }
+
+        // Запрашиваем выбор пира
+        print!("Выберите номер пира для отправки сообщения: ");
+        io::stdout().flush().unwrap();
+
+        let mut choice = String::new();
+        io::stdin().read_line(&mut choice).unwrap();
+        let choice: usize = match choice.trim().parse() {
+            Ok(num) => num,
+            Err(_) => {
+                println!("{}", "Неверный ввод. Пожалуйста, введите номер пира.".red());
+                return;
+            }
+        };
+
+        if choice < 1 || choice > available_peers.len() {
+            println!("{}", "Неверный номер пира.".red());
+            return;
+        }
+
+        let selected_peer = &available_peers[choice - 1];
+
+        if let Err(e) = api
+            .send_message(selected_peer.clone(), trimmed_input.to_string())
+            .await
+        {
+            println!(
+                "{}",
+                format!(
+                    "[Peer] Не удалось отправить сообщение {}: {}",
+                    selected_peer, e
+                )
+                .red()
+            );
+        } else {
+            println!("Сообщение успешно отправлено пиру: {}", selected_peer);
         }
     } else {
-        println!("{}", format!("[Peer] Команда '{}' не найдена", trimmed_input).red());
+        println!(
+            "{}",
+            format!("[Peer] Команда '{}' не найдена", trimmed_input).red()
+        );
     }
 }

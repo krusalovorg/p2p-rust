@@ -181,6 +181,8 @@ body {
     appearance: none;
     width: 18px;
     height: 18px;
+    min-width: 18px;
+    min-height: 18px;
     border: 2px solid #555;
     border-radius: 4px;
     position: relative;

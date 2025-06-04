@@ -1,5 +1,4 @@
 use super::ConnectionManager::ConnectionManager;
-use crate::connection::Connection;
 use crate::crypto::crypto::generate_uuid;
 use crate::packets::{
     FragmentMetadata, FragmentMetadataSync, Protocol, StorageReservationRequest, StorageReservationResponse, StorageToken, StorageValidTokenResponse, TransportData, TransportPacket
@@ -14,7 +13,6 @@ impl ConnectionManager {
     pub async fn handle_storage_reservation_request(
         &self,
         request: StorageReservationRequest,
-        connection: &Connection,
     ) -> Result<(), String> {
         let free_space = self.db.get_storage_free_space().await.unwrap();
         println!("[Peer] Free space: {}", free_space);
@@ -67,13 +65,12 @@ impl ConnectionManager {
             nodes: vec![],
         };
 
-        connection.send_packet(response).await.map_err(|e| e.to_string())
+        self.auto_send_packet(response).await.map_err(|e| e.to_string())
     }
 
     pub async fn handle_storage_valid_token_request(
         &self,
         token: String,
-        connection: &Connection,
         from_uuid: String,
     ) -> Result<(), String> {
         let token_bytes = base64::decode(&token).unwrap();
@@ -101,13 +98,12 @@ impl ConnectionManager {
             nodes: vec![],
         };
 
-        connection.send_packet(response).await.map_err(|e| e.to_string())
+        self.auto_send_packet(response).await.map_err(|e| e.to_string())
     }
 
     pub async fn handle_fragments_request(
         &self,
         packet_request: TransportPacket,
-        connection: &Connection,
     ) -> Result<(), String> {
         let mut fragments = self.db.get_my_fragments()
             .map_err(|e| format!("Ошибка при получении фрагментов: {}", e))?;
@@ -128,6 +124,7 @@ impl ConnectionManager {
                 owner_key: f.owner_key,
                 storage_peer_key: f.storage_peer_key,
                 size: f.size,
+                is_contract: f.is_contract,
             })
             .collect();
 
@@ -148,6 +145,6 @@ impl ConnectionManager {
 
         let to_peer = packet.to.clone().unwrap();
         println!("[Peer] Send fragments to {}", to_peer);
-        connection.send_packet(packet).await.map_err(|e| e.to_string())
+        self.auto_send_packet(packet).await.map_err(|e| e.to_string())
     }
 } 

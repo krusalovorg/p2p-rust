@@ -1,26 +1,15 @@
-use async_std::net::{SocketAddr, UdpSocket, IpAddr};
+use async_std::net::{IpAddr, SocketAddr};
 use async_std::sync::RwLock;
 use async_std::{fs, task};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use serde_json::Number;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{str, thread};
 use stun_client::*;
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
-use std::net::Ipv4Addr;
-
-#[derive(Serialize, Deserialize)]
-struct Message {
-    text: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct FileMessage {
-    filename: String,
-    data: Vec<u8>,
-}
 
 #[derive(Clone, Debug)]
 pub struct Tunnel {
@@ -30,6 +19,7 @@ pub struct Tunnel {
     pub socket: Option<Arc<UdpSocket>>,
     client: Option<SocketAddr>,
     pub is_connected: Arc<RwLock<bool>>,
+    packet_tx: Option<mpsc::Sender<String>>,
 }
 
 impl Tunnel {
@@ -37,6 +27,8 @@ impl Tunnel {
         let local_port = rand::thread_rng().gen_range(16000..65535);
         let (public_ip, public_port) = Self::stun(local_port).await;
         let mut is_connected = Arc::new(RwLock::new(false));
+        let (packet_tx, _) = mpsc::channel(1024);
+
         Tunnel {
             local_port,
             public_ip,
@@ -44,11 +36,14 @@ impl Tunnel {
             socket: None,
             client: None,
             is_connected,
+            packet_tx: Some(packet_tx),
         }
     }
-    
+
     pub async fn with_port(port: u16) -> Self {
         let (public_ip, public_port) = Self::stun(port).await;
+        let (packet_tx, _) = mpsc::channel(1024);
+
         Tunnel {
             local_port: port,
             public_ip,
@@ -56,6 +51,7 @@ impl Tunnel {
             socket: None,
             client: None,
             is_connected: Arc::new(RwLock::new(false)),
+            packet_tx: Some(packet_tx),
         }
     }
 
@@ -71,7 +67,7 @@ impl Tunnel {
             "stun3.l.google.com:19302",
             "stun4.l.google.com:19302",
             "stun.stunprotocol.org:3478",
-            "stun.voipstunt.com:3478"
+            "stun.voipstunt.com:3478",
         ];
 
         match fs::read_to_string("stun_servers.txt").await {
@@ -81,7 +77,7 @@ impl Tunnel {
                     .map(|line| line.trim().to_string())
                     .filter(|line| !line.is_empty())
                     .collect();
-                
+
                 for server in default_servers {
                     if !servers.contains(&server.to_string()) {
                         servers.push(server.to_string());
@@ -90,7 +86,10 @@ impl Tunnel {
                 servers
             }
             Err(e) => {
-                println!("[WARNING] Failed to load STUN servers from file: {:?}. Using default servers.", e);
+                println!(
+                    "[WARNING] Failed to load STUN servers from file: {:?}. Using default servers.",
+                    e
+                );
                 default_servers.into_iter().map(|s| s.to_string()).collect()
             }
         }
@@ -162,6 +161,43 @@ impl Tunnel {
         None
     }
 
+    async fn process_packet_queue(&self, mut rx: mpsc::Receiver<String>) {
+        while let Some(packet) = rx.recv().await {
+            let client = match self.client {
+                Some(addr) => addr,
+                None => {
+                    println!(
+                        "[ERROR] Не удалось отправить пакет: клиент не установлен (client is None)"
+                    );
+                    continue;
+                }
+            };
+
+            let socket = match &self.socket {
+                Some(sock) => sock,
+                None => {
+                    println!("[ERROR] Не удалось отправить пакет: сокет не инициализирован (socket is None)");
+                    continue;
+                }
+            };
+
+            match socket.send_to(packet.as_bytes(), client).await {
+                Ok(_) => println!("[DEBUG] Пакет успешно отправлен к {}", client),
+                Err(e) => println!("[ERROR] Не удалось отправить пакет к {}: {:?}", client, e),
+            }
+        }
+    }
+
+    pub async fn send_packet(&self, packet: &String) {
+        if let Some(tx) = &self.packet_tx {
+            if let Err(e) = tx.send(packet.clone()).await {
+                println!("[ERROR] Не удалось отправить пакет в очередь: {:?}", e);
+            }
+        } else {
+            println!("[ERROR] Канал отправки пакетов не инициализирован");
+        }
+    }
+
     pub async fn make_connection(
         &mut self,
         ip: &str,
@@ -176,44 +212,6 @@ impl Tunnel {
             None => return Err("[STUN] Не удалось определить локальный IP".to_string()),
         };
         println!("[STUN] Локальный IP: {}", local_ip);
-
-        // if ip == self.public_ip {
-        //     println!("[STUN] Обнаружено локальное соединение. Используем локальную сеть.");
-        //     let addr = format!("{}:{}", local_ip, port)
-        //         .parse::<SocketAddr>()
-        //         .expect("Invalid address");
-        //     let local_port = self.local_port;
-            
-        //     let sock = match UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await {
-        //         Ok(s) => Arc::new(s),
-        //         Err(e) => {
-        //             return Err(format!("[STUN] Failed to bind UDP socket: {:?}", e));
-        //         }
-        //     };
-
-        //     if let Err(e) = sock.send_to(b"Local Con. Request!", addr).await {
-        //         return Err(format!("[STUN] Failed to send local connection request: {:?}", e));
-        //     }
-
-        //     let mut buf = vec![0u8; 1024];
-        //     match timeout(Duration::from_secs(2), sock.recv_from(&mut buf)).await {
-        //         Ok(res) => match res {
-        //             Ok((_n, peer)) => {
-        //                 println!("[STUN] Локальное соединение установлено с {}:{}", peer.ip(), peer.port());
-        //                 self.client = Some(addr);
-        //                 self.socket = Some(sock.clone());
-        //                 self.is_connected = Arc::new(RwLock::new(true));
-        //                 return Ok(());
-        //             }
-        //             Err(e) => {
-        //                 return Err(format!("[STUN] Error while receiving data: {:?}", e));
-        //             }
-        //         },
-        //         Err(_) => {
-        //             return Err(format!("[STUN] Timeout while establishing local connection"));
-        //         }
-        //     }
-        // }
 
         let addr = format!("{}:{}", ip, port)
             .parse::<SocketAddr>()
@@ -235,7 +233,7 @@ impl Tunnel {
                 ip, port, timeout_count, timeout_default
             );
 
-            if let Err(e) = sock.send_to(b"Con. Request!", addr).await {
+            if let Err(e) = sock.send_to(b"KPL", addr).await {
                 println!("[STUN] Failed to send connection request: {:?}", e);
                 timeout_count -= 1;
                 continue;
@@ -250,7 +248,7 @@ impl Tunnel {
                             peer.ip(),
                             peer.port()
                         );
-                        if let Err(e) = sock.send_to(b"Con. Request!", addr).await {
+                        if let Err(e) = sock.send_to(b"KPL", addr).await {
                             println!("[STUN] Failed to resend connection request: {:?}", e);
                             timeout_count -= 1;
                             continue;
@@ -258,6 +256,17 @@ impl Tunnel {
                         self.client = Some(addr);
                         self.socket = Some(sock.clone());
                         self.is_connected = Arc::new(RwLock::new(true));
+
+                        if let Some(tx) = self.packet_tx.take() {
+                            let (new_tx, rx) = mpsc::channel(1024);
+                            self.packet_tx = Some(new_tx);
+
+                            let tunnel_clone = self.clone();
+                            tokio::spawn(async move {
+                                tunnel_clone.process_packet_queue(rx).await;
+                            });
+                        }
+
                         println!("[STUN] Hole with {} successfully broken!", addr);
                         return Ok(());
                     }
@@ -303,105 +312,12 @@ impl Tunnel {
         println!("[STUN] Starting life cycle...");
         let sock_clone = sock.clone();
 
-        // Запуск отдельной задачи для отправки KPL
-        thread::spawn(move || {
-            loop {
-                println!("[STUN] Sending keep-alive...");
-                task::block_on(sock_clone.send_to(b"KPL", client)).unwrap();
-                thread::sleep(Duration::from_secs_f64(1.0 / freq as f64));
-            }
+        thread::spawn(move || loop {
+            task::block_on(sock_clone.send_to(b"KPL", client)).map_err(|e| {
+                println!("[STUN] Failed to send keep-alive packet: {:?}", e);
+            });
+            thread::sleep(Duration::from_secs_f64(1.0 / freq as f64));
         });
-
-        // Основной цикл для обработки входящих данных
-        // loop {
-        //     let mut buf = vec![0u8; 9999];
-        //     while let Ok((n, reply_addr)) = task::block_on(sock.recv_from(&mut buf)) {
-        //         Self::handle_received_data(&buf[..n], reply_addr, client, sock.clone(), message_tx.clone());
-        //     }
-        // }
-    }
-
-    fn handle_received_data(
-        data: &[u8],
-        reply_addr: SocketAddr,
-        client: SocketAddr,
-        sock: Arc<UdpSocket>,
-    ) {
-        let protocol = &data[..3];
-        println!(
-            "[STUN] {}: Received {} from {}: {:?}",
-            client.ip(),
-            str::from_utf8(protocol).unwrap(),
-            reply_addr,
-            data
-        );
-
-        if protocol == b"KPL" {
-            return;
-        } else if protocol == b"MSG" {
-            let message: Message = serde_json::from_slice(&data[3..]).unwrap();
-            println!("[STUN] Message from {}: {}", client.ip(), message.text);
-        } else if protocol == b"FIL" {
-            let file_message: FileMessage = serde_json::from_slice(&data[3..]).unwrap();
-            println!(
-                "[STUN] Received file {} from {}",
-                file_message.filename,
-                client.ip()
-            );
-            task::block_on(Self::save_file(&file_message.filename, &file_message.data));
-        }
-    }
-
-    pub async fn send_message(&self, message: &str) {
-        let msg = Message {
-            text: message.to_string(),
-        };
-        let msg_bytes = serde_json::to_vec(&msg).unwrap();
-        let client = self.client.unwrap();
-        self.socket
-            .as_ref()
-            .unwrap()
-            .send_to(&[b"MSG", &msg_bytes[..]].concat(), client)
-            .await
-            .unwrap();
-    }
-
-    async fn save_file(filename: &str, data: &[u8]) {
-        let path = format!("./received_files/{}", filename);
-        if let Err(e) = fs::create_dir_all("./received_files").await {
-            println!("Failed to create directory: {:?}", e);
-            return;
-        }
-        if let Err(e) = fs::write(&path, data).await {
-            println!("Failed to save file: {:?}", e);
-        } else {
-            println!("File saved to {}", path);
-        }
-    }
-
-    pub async fn send_file_path(&self, file_path: &str) {
-        let filename = file_path.split('/').last().unwrap().to_string();
-        let data = fs::read(file_path).await;
-        if let Err(e) = data {
-            println!("Failed to read file: {:?}", e);
-            return;
-        }
-        self.send_file(&filename, data.unwrap()).await;
-    }
-
-    pub async fn send_file(&self, filename: &str, data: Vec<u8>) {
-        let file_message = FileMessage {
-            filename: filename.to_string(),
-            data,
-        };
-        let file_message_bytes = serde_json::to_vec(&file_message).unwrap();
-        let client = self.client.unwrap();
-        self.socket
-            .as_ref()
-            .unwrap()
-            .send_to(&[b"FIL", &file_message_bytes[..]].concat(), client)
-            .await
-            .unwrap();
     }
 
     pub fn get_public_ip(&self) -> String {

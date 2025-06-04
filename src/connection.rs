@@ -280,7 +280,7 @@ impl Connection {
                 Ok(packet)
             }
             Err(e) => {
-                log(&format!("[Connection] Failed to parse JSON: {}", e));
+                log(&format!("[Connection] Failed to parse JSON: {}, original data: {}", e, data));
                 Err(format!("Failed to parse JSON: {}", e))
             }
         }

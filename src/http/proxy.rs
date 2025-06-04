@@ -3,13 +3,11 @@ use std::io::{self, Read};
 use flate2::read::GzEncoder;
 use flate2::Compression;
 
-use crate::connection::Connection;
 use crate::manager::ConnectionManager::ConnectionManager;
-use crate::packets::{Protocol, ProxyMessage, TransportData, TransportPacket, FileRequest};
+use crate::packets::{Protocol, ProxyMessage, TransportData, TransportPacket};
 
 pub async fn handle_http_proxy_response(
     packet: TransportPacket,
-    connection: &Connection,
     manager: Arc<ConnectionManager>,
     path_blobs: String,
 ) -> Result<(), String> {
@@ -77,8 +75,8 @@ pub async fn handle_http_proxy_response(
             nodes: vec![],
         };
 
-        connection
-            .send_packet(response_packet)
+        manager
+            .auto_send_packet(response_packet)
             .await
             .map_err(|e| e.to_string())
     } else {

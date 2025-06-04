@@ -17,6 +17,7 @@ pub struct Storage {
     pub size: u64,
     pub groups: Vec<String>,
     pub tags: Vec<String>,
+    pub is_contract: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

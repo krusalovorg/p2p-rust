@@ -30,6 +30,7 @@ pub struct PeerFileSaved {
     pub public: bool,
     pub size: u64,
     pub mime: String,
+    pub is_contract: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -51,6 +52,7 @@ pub struct PeerUploadFile {
     pub encrypted: bool,
     pub compressed: bool,
     pub auto_decompress: bool,
+    pub is_contract: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -224,6 +226,21 @@ pub struct FileRequest {
     pub end_peer_id: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ContractExecutionRequest {
+    pub contract_hash: String,
+    pub function_name: String,
+    pub payload: Vec<u8>,
+    pub peer_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ContractExecutionResponse {
+    pub contract_hash: String,
+    pub result: Vec<u8>,
+    pub peer_id: String,
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub enum TransportData {
     Message(Message),
@@ -252,6 +269,8 @@ pub enum TransportData {
     FragmentSearchRequest(FragmentSearchRequest),
     FragmentSearchResponse(FragmentSearchResponse),
     PeerFileUpdate(PeerFileUpdate),
+    ContractExecutionRequest(ContractExecutionRequest),
+    ContractExecutionResponse(ContractExecutionResponse),
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
@@ -297,6 +316,7 @@ pub struct FragmentMetadata {
     pub owner_key: String,
     pub storage_peer_key: String,
     pub size: u64,
+    pub is_contract: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

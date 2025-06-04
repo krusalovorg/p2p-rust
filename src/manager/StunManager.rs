@@ -1,5 +1,6 @@
 use crate::connection::Connection;
 use crate::crypto::crypto::generate_uuid;
+use crate::manager::ConnectionTurnStatus;
 use crate::packets::{PeerWaitConnection, Protocol, TransportData, TransportPacket};
 use crate::tunnel::Tunnel;
 use anyhow::Result;
@@ -11,7 +12,6 @@ impl ConnectionManager {
     pub async fn send_wait_connection(
         &self,
         target_uuid: String,
-        server_conn: &Connection,
         my_key: String,
     ) -> Result<(), String> {
         println!("[DEBUG] Starting send_wait_connection");
@@ -54,8 +54,8 @@ impl ConnectionManager {
 
         println!("[DEBUG] Sending accept_connection packet: {:?}", packet);
 
-        server_conn
-            .send_packet(packet)
+        self
+            .auto_send_packet(packet)
             .await
             .map_err(|e| e.to_string())
     }
@@ -84,6 +84,14 @@ impl ConnectionManager {
                 
                 match tunnel_guard.make_connection(&ip, port, 3).await {
                     Ok(()) => {
+                        self.connections_turn.insert(
+                            packet.peer_key.clone(),
+                            ConnectionTurnStatus {
+                                connected: true,
+                                stun_connection: true,
+                                is_signal: false,
+                            },
+                        );
                         tunnel_guard.backlife_cycle(3);
                         drop(tunnel_guard);
                         println!("[DEBUG] Successfully established connection");

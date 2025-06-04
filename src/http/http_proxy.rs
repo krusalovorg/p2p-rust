@@ -20,6 +20,10 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 use crate::logger;
+use std::collections::HashSet;
+use std::net::IpAddr;
+
+use crate::http::security::{SecurityManager, SecurityConfig, SecurityError};
 
 #[derive(Clone, Debug)]
 struct CachedFile {
@@ -36,6 +40,7 @@ pub struct HttpProxy {
     fragment_cache: Arc<DashMap<String, String>>,
     file_cache: Arc<DashMap<String, CachedFile>>,
     path_blobs: String,
+    security_manager: Arc<SecurityManager>,
 }
 
 impl HttpProxy {
@@ -44,13 +49,19 @@ impl HttpProxy {
         proxy_tx: mpsc::Sender<TransportPacket>,
         path_blobs: String,
     ) -> Self {
+        let security_config = SecurityConfig {
+            allowed_ips: HashSet::new(), // Добавьте разрешенные IP
+            ..Default::default()
+        };
+        
         Self {
             db,
             proxy_tx,
             pending_responses: Arc::new(DashMap::new()),
             fragment_cache: Arc::new(DashMap::new()),
             file_cache: Arc::new(DashMap::new()),
-            path_blobs: path_blobs,
+            path_blobs,
+            security_manager: Arc::new(SecurityManager::new(security_config)),
         }
     }
 
@@ -177,6 +188,19 @@ impl HttpProxy {
         req: Request<Incoming>,
         client_ip: String,
     ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
+        // Проверяем безопасность запроса
+        if let Err(e) = self.security_manager.check_request(&req, &client_ip) {
+            logger::error(&format!(
+                "[HTTP Proxy] [SECURITY] Request blocked: {:?} from IP: {}",
+                e, client_ip
+            ));
+            
+            return Ok(Response::builder()
+                .status(hyper::StatusCode::FORBIDDEN)
+                .body(full(format!("Request blocked: {:?}", e)))
+                .unwrap());
+        }
+
         logger::info(&format!("[HTTP Proxy] Request Method: {}", req.method()));
         logger::info(&format!("[HTTP Proxy] Request URI: {}", req.uri()));
         logger::info("[HTTP Proxy] Request Headers:");

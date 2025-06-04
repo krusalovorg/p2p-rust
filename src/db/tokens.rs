@@ -73,21 +73,17 @@ impl P2PDatabase {
         let mut best_token = None;
         let mut best_free_space = 0;
         
-        println!("[DEBUG] Starting iteration over tokens");
         for item in table.iter()? {
             let (key, value) = item?;
-            println!("[DEBUG] Processing token for peer: {}", key.value());
             let json_str = String::from_utf8(value.value().to_vec()).unwrap();
             let token_info: TokenInfo = serde_json::from_str(&json_str).unwrap();
             if token_info.free_space >= file_size {
                 if token_info.free_space > best_free_space && my_peer_id == key.value().to_string() {
                     best_free_space = token_info.free_space;
                     best_token = Some((key.value().to_string(), token_info));
-                    println!("[DEBUG] Found better token with free space: {}", best_free_space);
                 }
             }
         }
-        println!("[DEBUG] Finished processing tokens");
 
         Ok(best_token)
     }

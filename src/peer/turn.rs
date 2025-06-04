@@ -1,14 +1,14 @@
 use anyhow::Result;
 use colored::*;
 
-use crate::connection::Connection;
 use crate::crypto::crypto::generate_uuid;
+use crate::manager::ConnectionManager::ConnectionManager;
 use crate::packets::{Protocol, TransportPacket};
 use crate::db::P2PDatabase;
 
 pub async fn turn_tunnel(
+    manager: &ConnectionManager,
     packet: TransportPacket,
-    signal: &Connection,
     db: &P2PDatabase,
 ) -> Result<String, String> {
 
@@ -26,7 +26,7 @@ pub async fn turn_tunnel(
             uuid: generate_uuid(),
             nodes: vec![],
         };
-        let result = signal.send_packet(packet_hello).await;
+        let result = manager.auto_send_packet(packet_hello).await;
         println!(
             "{}",
             format!("[TURN] [try_turn_connection] Result sending socket {:?}", result).yellow()
@@ -50,7 +50,7 @@ pub async fn turn_tunnel(
             nodes: vec![],
         };
         println!("{}", "[TURN] [accept_connection] Sending accept connection".yellow());
-        let result = signal.send_packet(packet_hello).await;
+        let result = manager.auto_send_packet(packet_hello).await;
         match result {
             Ok(_) => {
                 return Ok("successful_connection".to_string());

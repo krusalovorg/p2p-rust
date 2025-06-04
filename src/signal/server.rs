@@ -702,6 +702,7 @@ impl SignalServer {
                             size: fragment.size,
                             tags: vec![],
                             groups: vec![],
+                            is_contract: fragment.is_contract,
                         };
 
                         if let Err(e) = self.db.add_storage_fragment(storage) {
@@ -761,6 +762,27 @@ impl SignalServer {
                             ));
                         }
                     }
+                }
+                TransportData::ContractExecutionRequest(request) => {
+                    if let Ok(fragment) = self.db.get_storage_fragments_by_hash(&request.contract_hash) {
+                        if let Some(fragment) = fragment {
+                            let packet = TransportPacket {
+                                act: "request_contract".to_string(),
+                                to: Some(fragment.storage_peer_key.clone()),
+                                data: Some(TransportData::ContractExecutionRequest(request.clone())),
+                                protocol: Protocol::SIGNAL,
+                                peer_key: self.db.get_or_create_peer_id().unwrap(),
+                                uuid: generate_uuid(),
+                                nodes: vec![],
+                            };
+                            self.auto_send_packet(packet).await;
+                        }
+                    } else {
+                        self.auto_send_packet(message.clone()).await;
+                    }
+                }
+                TransportData::ContractExecutionResponse(response) => {
+                    self.auto_send_packet(message.clone()).await;
                 }
                 _ => {}
             }

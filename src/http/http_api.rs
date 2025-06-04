@@ -1,8 +1,7 @@
 use super::api::{full, log, FileAccessRequest, FileCache, UpdateRequest, UploadRequest};
 use crate::db::P2PDatabase;
 use crate::packets::{
-    FragmentSearchRequest, PeerFileGet, PeerFileUpdate, PeerUploadFile, Protocol, TransportData,
-    TransportPacket,
+    ContractExecutionRequest, FragmentSearchRequest, PeerFileGet, PeerFileUpdate, PeerUploadFile, Protocol, TransportData, TransportPacket
 };
 use bytes::Bytes;
 use chrono;
@@ -41,6 +40,7 @@ struct PacketRequest {
     to: Option<String>,
     data: Option<TransportData>,
     protocol: Protocol,
+    act: Option<String>,
 }
 
 impl HttpApi {
@@ -159,6 +159,7 @@ impl HttpApi {
             {
                 self.handle_change_file_access(req).await
             }
+            (&hyper::Method::POST, "/api/contract/call") => self.handle_contract_call(req).await,
             _ => Ok(Response::builder()
                 .status(hyper::StatusCode::NOT_FOUND)
                 .body(full("Not Found"))
@@ -223,7 +224,7 @@ impl HttpApi {
         self.pending_responses.insert(request_id.clone(), tx);
 
         let packet = TransportPacket {
-            act: "api_request".to_string(),
+            act: packet_request.act.unwrap_or("api_request".to_string()),
             to: packet_request.to,
             data: packet_request.data,
             protocol: packet_request.protocol,
@@ -785,6 +786,7 @@ impl HttpApi {
                 encrypted,
                 compressed,
                 auto_decompress,
+                is_contract: false,
             })),
             protocol: Protocol::TURN,
             peer_key: my_peer_id,
@@ -1173,6 +1175,95 @@ impl HttpApi {
                 .header("Access-Control-Allow-Headers", "Content-Type")
                 .body(full("File access changed successfully"))
                 .unwrap()),
+            _ => Ok(Response::builder()
+                .status(hyper::StatusCode::GATEWAY_TIMEOUT)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body(full("Request timeout"))
+                .unwrap()),
+        }
+    }
+
+    async fn handle_contract_call(
+        &self,
+        req: Request<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
+        let whole_body = req.collect().await?.to_bytes();
+        
+        #[derive(serde::Deserialize)]
+        struct ContractCallRequest {
+            contract_hash: String,
+            function_name: String,
+            payload: String,
+        }
+
+        let request: ContractCallRequest = match serde_json::from_slice(&whole_body) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(Response::builder()
+                    .status(hyper::StatusCode::BAD_REQUEST)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type")
+                    .body(full(format!("Invalid request format: {}", e)))
+                    .unwrap());
+            }
+        };
+
+        let request_id = Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.pending_responses.insert(request_id.clone(), tx);
+
+        let packet = TransportPacket {
+            act: "request_contract".to_string(),
+            to: None,
+            data: Some(TransportData::ContractExecutionRequest(
+                ContractExecutionRequest {
+                    contract_hash: request.contract_hash,
+                    function_name: request.function_name,
+                    payload: request.payload.into_bytes(),
+                    peer_id: self.db.get_or_create_peer_id().unwrap(),
+                },
+            )),
+            protocol: Protocol::SIGNAL,
+            peer_key: self.db.get_or_create_peer_id().unwrap(),
+            uuid: request_id.clone(),
+            nodes: vec![],
+        };
+
+        if let Err(e) = self.api_tx.send(packet).await {
+            return Ok(Response::builder()
+                .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
+                .header("Access-Control-Allow-Origin", "*")
+                .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .header("Access-Control-Allow-Headers", "Content-Type")
+                .body(full(format!("Failed to send packet: {}", e)))
+                .unwrap());
+        }
+
+        match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
+            Ok(Ok(response)) => {
+                if let Some(TransportData::ContractExecutionResponse(contract_response)) = response.data {
+                    let result = String::from_utf8_lossy(&contract_response.result);
+                    Ok(Response::builder()
+                        .status(hyper::StatusCode::OK)
+                        .header("Content-Type", "application/json")
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                        .header("Access-Control-Allow-Headers", "Content-Type")
+                        .body(full(format!("{{\"result\":\"{}\"}}", result)))
+                        .unwrap())
+                } else {
+                    Ok(Response::builder()
+                        .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                        .header("Access-Control-Allow-Headers", "Content-Type")
+                        .body(full("Invalid response format"))
+                        .unwrap())
+                }
+            }
             _ => Ok(Response::builder()
                 .status(hyper::StatusCode::GATEWAY_TIMEOUT)
                 .header("Access-Control-Allow-Origin", "*")
