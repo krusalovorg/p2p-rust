@@ -246,6 +246,9 @@ pub fn print_all_commands() {
         ("call_contract <contract_hash> <function_name> <data>", "Вызвать контракт с указанными данными"),
         ("get_private_key", "Получить приватный ключ"),
         ("help", "Показать доступные команды"),
+        ("log_level <debug/info/warning/error/all> <on/off>", "Включить/выключить уровень логирования"),
+        ("log_file <path>", "Установить путь к файлу логов"),
+        ("log_status", "Показать текущие настройки логирования"),
     ];
 
     println!("\n{}", top_border.bright_blue());
@@ -638,6 +641,65 @@ pub async fn console_manager(
                 println!("{}", "[Peer] Запрос на загрузку файла отправлен".green());
             }
         }
+    } else if trimmed_input.starts_with("log_level ") {
+        let args: Vec<&str> = trimmed_input.split_whitespace().collect();
+        if args.len() != 3 {
+            println!("{}", "[Peer] Использование: log_level <debug/info/warning/error/all> <on/off>".red());
+            return;
+        }
+
+        let level = args[1].to_lowercase();
+        let enabled = match args[2].to_lowercase().as_str() {
+            "on" => true,
+            "off" => false,
+            _ => {
+                println!("{}", "[Peer] Значение должно быть 'on' или 'off'".red());
+                return;
+            }
+        };
+
+        match level.as_str() {
+            "debug" => {
+                crate::logger::set_debug(enabled);
+                println!("{}", format!("[Peer] Уровень логирования DEBUG {}", if enabled { "включен" } else { "выключен" }).green());
+            }
+            "info" => {
+                crate::logger::set_info(enabled);
+                println!("{}", format!("[Peer] Уровень логирования INFO {}", if enabled { "включен" } else { "выключен" }).green());
+            }
+            "warning" => {
+                crate::logger::set_warning(enabled);
+                println!("{}", format!("[Peer] Уровень логирования WARNING {}", if enabled { "включен" } else { "выключен" }).green());
+            }
+            "error" => {
+                crate::logger::set_error(enabled);
+                println!("{}", format!("[Peer] Уровень логирования ERROR {}", if enabled { "включен" } else { "выключен" }).green());
+            }
+            "all" => {
+                crate::logger::set_debug(enabled);
+                crate::logger::set_info(enabled);
+                crate::logger::set_warning(enabled);
+                crate::logger::set_error(enabled);
+                println!("{}", format!("[Peer] Все уровни логирования {}", if enabled { "включены" } else { "выключены" }).green());
+            }
+            _ => {
+                println!("{}", "[Peer] Неизвестный уровень логирования. Используйте: debug, info, warning, error или all".red());
+            }
+        }
+    } else if trimmed_input.starts_with("log_file ") {
+        let path = trimmed_input.strip_prefix("log_file ").unwrap().trim();
+        if path.is_empty() {
+            println!("{}", "[Peer] Использование: log_file <путь_к_файлу>".red());
+            return;
+        }
+        crate::logger::set_log_file(Some(path));
+        println!("{}", format!("[Peer] Файл логов установлен: {}", path).green());
+    } else if trimmed_input == "log_status" {
+        println!("\n{}", "Текущие настройки логирования:".cyan());
+        println!("{}", format!("DEBUG: {}", if crate::logger::is_debug_enabled() { "включен" } else { "выключен" }).yellow());
+        println!("{}", format!("INFO: {}", if crate::logger::is_info_enabled() { "включен" } else { "выключен" }).yellow());
+        println!("{}", format!("WARNING: {}", if crate::logger::is_warning_enabled() { "включен" } else { "выключен" }).yellow());
+        println!("{}", format!("ERROR: {}", if crate::logger::is_error_enabled() { "включен" } else { "выключен" }).yellow());
     } else if connections_turn.len() > 0 {
         let connections = connections_turn.iter();
         let mut available_peers: Vec<String> = Vec::new();

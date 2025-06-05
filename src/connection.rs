@@ -8,17 +8,10 @@ use tokio::task;
 use tokio::time::sleep;
 
 use crate::crypto::crypto::generate_uuid;
+use crate::logger::{error, info, debug};
 use crate::packets::{Protocol, TransportPacket, TransportData, PeerInfo};
 use crate::crypto::signature::{sign_packet, verify_packet};
 use crate::db::P2PDatabase;
-
-const SHOW_LOGS: bool = false;
-
-fn log(message: &str) {
-    if SHOW_LOGS {
-        println!("{}", message);
-    }
-}
 
 #[derive(Debug)]
 pub enum Message {
@@ -82,7 +75,7 @@ impl Connection {
                     break;
                 }
                 Err(e) => {
-                    log(&format!("[Connection] Failed to connect (attempt {}/{}): {}", 
+                    error(&format!("[Connection] Failed to connect (attempt {}/{}): {}", 
                         attempts + 1, max_reconnect_attempts, e));
                     attempts += 1;
                     if attempts < max_reconnect_attempts {
@@ -121,9 +114,9 @@ impl Connection {
         let _ = sign_packet(&mut connect_packet, &signing_key);
 
         if let Err(e) = Self::write_packet(&writer, &connect_packet).await {
-            log(&format!("[Connection] Failed to send connect packet: {}", e));
+            error(&format!("[Connection] Failed to send connect packet: {}", e));
         } else {
-            log("[Connection] Connect packet sent successfully");
+            info(&format!("[Connection] Connect packet sent successfully"));
         }
 
         task::spawn(Self::process_messages(
@@ -163,11 +156,11 @@ impl Connection {
         // Отправляем само сообщение
         match writer.write_all(packet_str.as_bytes()).await {
             Ok(_) => {
-                log("[Connection] Packet sent successfully");
+                info(&format!("[Connection] Packet sent successfully"));
                 Ok(())
             }
             Err(e) => {
-                log(&format!("[Connection] Failed to send packet: {}", e));
+                error(&format!("[Connection] Failed to send packet: {}", e));
                 Err(e.to_string())
             }
         }
@@ -180,47 +173,47 @@ impl Connection {
         writer: Arc<RwLock<tokio::io::WriteHalf<TcpStream>>>,
         db: Arc<P2PDatabase>,
     ) {
-        log("[Connection] Processing messages started");
+        info(&format!("[Connection] Processing messages started"));
 
         sleep(Duration::from_millis(100)).await;
 
         match Self::send_peer_info_request(&writer, &db).await {
-            Ok(_) => log("[Connection] Peer info request sent successfully"),
+            Ok(_) => info(&format!("[Connection] Peer info request sent successfully")),
             Err(e) => {
-                log(&format!("[Connection] Failed to send peer info request: {}", e));
+                error(&format!("[Connection] Failed to send peer info request: {}", e));
             }
         }
 
-        log("[Connection] Starting message processing loop");
+        info(&format!("[Connection] Starting message processing loop"));
         while let Some(message) = rx.recv().await {
-            log("[Connection] Received message from channel");
+            info(&format!("[Connection] Received message from channel"));
             match message {
                 Message::SendData(packet) => {
-                    log(&format!("[Connection] Processing SendData message: {:?}", packet));
+                    debug(&format!("[Connection] Processing SendData message: {:?}", packet));
                     if let Err(e) = Self::write_packet(&writer, &packet).await {
-                        log(&format!("[Connection] Failed to send packet: {}", e));
+                        error(&format!("[Connection] Failed to send packet: {}", e));
                     } else {
-                        log("[Connection] Packet sent successfully");
+                        debug(&format!("[Connection] Packet sent successfully"));
                     }
                 }
                 Message::GetResponse { tx } => {
-                    log("[Connection] Processing GetResponse message");
+                    debug(&format!("[Connection] Processing GetResponse message"));
                     let response = match Self::receive_message(&reader).await {
                         Ok(response) => response,
                         Err(e) => {
-                            log(&format!("[Connection] Failed to receive message: {}", e));
+                            error(&format!("[Connection] Failed to receive message: {}", e));
                             continue;
                         }
                     };
                     if let Err(e) = tx.send(response) {
-                        log(&format!("[Connection] Failed to send response to channel: {:?}", e));
+                        error(&format!("[Connection] Failed to send response to channel: {:?}", e));
                     } else {
-                        log("[Connection] Response sent successfully");
+                        debug(&format!("[Connection] Response sent successfully"));
                     }
                 }
             }
         }
-        log("[Connection] Message processing loop ended");
+        info(&format!("[Connection] Message processing loop ended"));
     }
 
     pub async fn send_peer_info_request(
@@ -250,8 +243,10 @@ impl Connection {
             nodes: vec![],
             signature: None,
         };
-        let mut signing_key = db.get_private_signing_key().unwrap();
-        let _ = sign_packet(&mut connect_packet, &signing_key);
+
+        // Подписываем пакет
+        let signing_key = db.get_private_signing_key().map_err(|e| format!("Failed to get signing key: {}", e))?;
+        sign_packet(&mut connect_packet, &signing_key)?;
 
         Self::write_packet(writer, &connect_packet).await
     }
@@ -265,7 +260,7 @@ impl Connection {
         let mut len_bytes = [0u8; 4];
         if let Err(e) = reader.read_exact(&mut len_bytes).await {
             if e.kind() == std::io::ErrorKind::ConnectionReset {
-                log(&format!("[Connection] Connection reset by peer: {}", e));
+                error(&format!("[Connection] Connection reset by peer: {}", e));
                 return Err("Connection reset by peer".to_string());
             }
             return Err(format!("Failed to read message length: {}", e));
@@ -275,7 +270,7 @@ impl Connection {
         let mut packet_bytes = vec![0u8; packet_len];
         if let Err(e) = reader.read_exact(&mut packet_bytes).await {
             if e.kind() == std::io::ErrorKind::ConnectionReset {
-                log(&format!("[Connection] Connection reset by peer: {}", e));
+                error(&format!("[Connection] Connection reset by peer: {}", e));
                 return Err("Connection reset by peer".to_string());
             }
             return Err(format!("Failed to read message: {}", e));
@@ -285,14 +280,15 @@ impl Connection {
         
         match serde_json::from_str(&data) {
             Ok(packet) => {
+                // Проверяем подпись пакета
                 if let Err(e) = verify_packet(&packet) {
-                    log(&format!("[Connection] Signature verification failed: {}", e));
-                    return Err(e);
+                    error(&format!("[Connection] Signature verification failed: {}. Packet: {}", e, data));
+                    return Err(format!("Signature verification failed: {}", e));
                 }
                 Ok(packet)
             }
             Err(e) => {
-                log(&format!("[Connection] Failed to parse JSON: {}, original data: {}", e, data));
+                error(&format!("[Connection] Failed to parse JSON: {}", e));
                 Err(format!("Failed to parse JSON: {}", e))
             }
         }
@@ -305,7 +301,7 @@ impl Connection {
             Ok(packet) => Ok(packet),
             Err(e) => {
                 if e.contains("Connection reset by peer") || e.contains("Failed to receive message") {
-                    log(&format!("[Connection] Connection lost while receiving: {}", e));
+                    error(&format!("[Connection] Connection lost while receiving: {}", e));
                     match self.handle_connection_loss().await {
                         Ok(_) => {
                             Self::receive_message(&self.reader).await
@@ -324,13 +320,14 @@ impl Connection {
     }
 
     pub async fn send_packet(&self, mut packet: TransportPacket) -> Result<(), String> {
-        let mut signing_key = self.db.get_private_signing_key().unwrap();
-        let _ = sign_packet(&mut packet, &signing_key);
+        let signing_key = self.db.get_private_signing_key().map_err(|e| format!("Failed to get signing key: {}", e))?;
+        sign_packet(&mut packet, &signing_key)?;
+
         match Self::write_packet(&self.writer, &packet).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 if e.contains("Connection reset by peer") || e.contains("Failed to send packet length") {
-                    log(&format!("[Connection] Connection lost while sending packet: {}", e));
+                    error(&format!("[Connection] Connection lost while sending packet: {}", e));
                     match self.handle_connection_loss().await {
                         Ok(_) => {
                             Self::write_packet(&self.writer, &packet).await
@@ -372,14 +369,14 @@ impl Connection {
         }
 
         *attempts += 1;
-        log(&format!("[Connection] Attempting to reconnect (attempt {}/{})", 
+        info(&format!("[Connection] Attempting to reconnect (attempt {}/{})", 
             *attempts, self.max_reconnect_attempts));
 
         // Пытаемся установить новое соединение
         let stream = match TcpStream::connect(format!("{}:{}", self.ip, self.port)).await {
             Ok(s) => s,
             Err(e) => {
-                log(&format!("[Connection] Failed to connect: {}", e));
+                error(&format!("[Connection] Failed to connect: {}", e));
                 return Err(e.to_string());
             }
         };
@@ -396,7 +393,7 @@ impl Connection {
 
         // Отправляем info пакет после переподключения
         if let Err(e) = self.send_peer_info_request_self().await {
-            log(&format!("[Connection] Failed to send peer info after reconnect: {}", e));
+            error(&format!("[Connection] Failed to send peer info after reconnect: {}", e));
             return Err(e);
         }
 

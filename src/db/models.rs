@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Storage {
@@ -18,13 +19,6 @@ pub struct Storage {
     pub groups: Vec<String>,
     pub tags: Vec<String>,
     pub is_contract: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DHTEntry {
-    pub peer_id: String,
-    pub session_key: String,
-    pub timestamp: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -51,4 +45,14 @@ pub struct PeerStats {
     pub free_space: u64,
     pub stored_files: Vec<String>, // хэши файлов
     pub last_update: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ContractMetadata {
+    pub contract_id: String,
+    pub action: String,
+    pub timestamp: u64,
+    pub data: HashMap<String, String>,
+    pub success: bool,
+    pub message: String,
 } 

@@ -282,7 +282,7 @@ pub struct TransportPacket {
     pub peer_key: String,
     pub uuid: String,
     pub nodes: Vec<SearchPathNode>, // ноды через которых прошел пакет
-    pub signature: Option<String>,
+    pub signature: Option<String>,  // подпись пакета
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -330,8 +330,8 @@ impl std::fmt::Display for TransportPacket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "TransportPacket {{ act: {}, to: {:?}, protocol: {:?}, uuid: {} }}",
-            self.act, self.to, self.protocol, format!("{:?}...{:?}", &self.uuid[0..5], &self.uuid[30..])
+            "TransportPacket {{ act: {}, to: {:?}, protocol: {:?}, uuid: {}, signature: {:?} }}",
+            self.act, self.to, self.protocol, format!("{:?}...{:?}", &self.uuid[0..5], &self.uuid[30..]), self.signature
         )
     }
 }

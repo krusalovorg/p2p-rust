@@ -144,7 +144,11 @@ impl PeerAPI {
         if used_space + file_size > token_info.free_space && !public {
             return Err(UploadError::InsufficientSpace {
                 required: file_size,
-                available: token_info.free_space - used_space,
+                available: if used_space > token_info.free_space {
+                    0
+                } else {
+                    token_info.free_space - used_space
+                },
             });
         }
 

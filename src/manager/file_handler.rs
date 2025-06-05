@@ -1,5 +1,6 @@
 use super::ConnectionManager::ConnectionManager;
 use crate::connection::Connection;
+use crate::contract::runtime::execute_contract_with_payload;
 use crate::crypto::crypto::generate_uuid;
 use crate::crypto::token::validate_signature_token;
 use crate::db::{P2PDatabase, Storage};
@@ -295,10 +296,11 @@ impl ConnectionManager {
 
         if contract.first().unwrap().is_contract {
             let paths_to_blob_contract = format!("{}/blobs/{}", self.db.path.as_str(), contract.first().unwrap().file_hash);
-            let result = crate::contract::runtime::execute_contract_with_payload(
+            let result = execute_contract_with_payload(
                 &paths_to_blob_contract,
                 &request.function_name,
                 &request.payload,
+                &self.db,
             )
             .map_err(|e| format!("Failed to execute contract: {}", e))?;
 

@@ -1,10 +1,10 @@
+pub mod contract;
 mod db;
 mod models;
-pub mod tables;
 mod peer;
 mod storage;
-mod dht;
 mod tokens;
 mod stats;
+pub mod tables;
 pub use db::P2PDatabase;
-pub use models::Storage;
+pub use models::{Storage, ContractMetadata};

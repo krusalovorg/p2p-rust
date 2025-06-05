@@ -66,6 +66,22 @@ pub fn set_error(enabled: bool) {
     unsafe { SHOW_ERROR = enabled; }
 }
 
+pub fn is_debug_enabled() -> bool {
+    unsafe { SHOW_DEBUG }
+}
+
+pub fn is_info_enabled() -> bool {
+    unsafe { SHOW_INFO }
+}
+
+pub fn is_warning_enabled() -> bool {
+    unsafe { SHOW_WARNING }
+}
+
+pub fn is_error_enabled() -> bool {
+    unsafe { SHOW_ERROR }
+}
+
 fn get_timestamp() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }

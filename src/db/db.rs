@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::tables;
-use super::models::PeerStats;
+use super::models::{PeerStats, ContractMetadata};
 
 #[derive(Clone, Debug)]
 pub struct P2PDatabase {
@@ -23,10 +23,11 @@ impl P2PDatabase {
                 write_txn.open_table(tables::STORAGE_TABLE)?;
                 write_txn.open_table(tables::PEER_INFO_TABLE)?;
                 write_txn.open_table(tables::SECRET_KEYS_TABLE)?;
-                write_txn.open_table(tables::DHT_TABLE)?;
                 write_txn.open_table(tables::TOKENS_TABLE)?;
                 write_txn.open_table(tables::VALIDATOR_STORAGE_TABLE)?;
                 write_txn.open_table(tables::PEER_STATS_TABLE)?;
+                write_txn.open_table(tables::CONTRACT_METADATA_TABLE)?;
+                write_txn.open_table(tables::CONTRACT_CONSENSUS_TABLE)?;
             }
             write_txn.commit()?;
         }

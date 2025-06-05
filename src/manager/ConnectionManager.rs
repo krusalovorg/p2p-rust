@@ -161,8 +161,11 @@ impl ConnectionManager {
     }
 
     pub async fn auto_send_packet(&self, mut packet: TransportPacket) -> Result<(), String> {
-        let mut signing_key = self.db.get_private_signing_key().unwrap();
-        let _ = sign_packet(&mut packet, &signing_key);
+        if packet.signature.is_none() {
+            let signing_key = self.db.get_private_signing_key().map_err(|e| format!("Failed to get signing key: {}", e))?;
+            sign_packet(&mut packet, &signing_key)?;
+        }
+
         let mut sended_by_uuid = false;
 
         if let Some(to) = &packet.to {

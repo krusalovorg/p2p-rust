@@ -1,6 +1,4 @@
 use crate::db::tables::PEER_INFO_TABLE;
-use flate2::bufread::GzEncoder;
-use k256::elliptic_curve::group::UncompressedEncoding;
 use redb::Error;
 use anyhow::Result;
 use uuid::Uuid;
@@ -12,7 +10,7 @@ use k256::{
     SecretKey,
     PublicKey,
 };
-use k256::ecdsa::{SigningKey, VerifyingKey};
+use k256::ecdsa::{SigningKey};
 use k256::elliptic_curve::sec1::{ToEncodedPoint, FromEncodedPoint};
 
 use super::P2PDatabase;

@@ -95,6 +95,7 @@ impl PeerSearchManager {
                             peer_key: self.public_key.clone(),
                             uuid: generate_uuid(),
                             nodes: path_clone.clone(),
+                            signature: None,
                         };
                         peer.send_data(&serde_json::to_string(&packet).unwrap())
                             .await;
@@ -159,6 +160,7 @@ impl PeerSearchManager {
                             peer_key: self.public_key.clone(),
                             uuid: generate_uuid(),
                             nodes: path_clone,
+                            signature: None,
                         };
                         initiator_peer.send_data(&serde_json::to_string(&packet).unwrap())
                             .await;
@@ -204,6 +206,7 @@ impl PeerSearchManager {
                 peer_key: peer_id,
                 uuid: generate_uuid(),
                 nodes: path_clone,
+                signature: None,
             };
 
             let servers = self.connected_servers.read().await;
@@ -252,6 +255,7 @@ impl PeerSearchManager {
                                 peer_key: self.public_key.clone(),
                                 uuid: generate_uuid(),
                                 nodes: path_clone,
+                                signature: None,
                             };
                             peer.send_data(&serde_json::to_string(&packet).unwrap())
                                 .await;
@@ -282,6 +286,7 @@ impl PeerSearchManager {
                                 peer_key: self.public_key.clone(),
                                 uuid: generate_uuid(),
                                 nodes: path_clone,
+                                signature: None,
                             };
                             peer.send_data(&serde_json::to_string(&packet).unwrap())
                                 .await;
@@ -302,6 +307,7 @@ impl PeerSearchManager {
                     peer_key: self.public_key.clone(),
                     uuid: generate_uuid(),
                     nodes: path_clone,
+                    signature: None,
                 };
 
                 let servers = self.connected_servers.read().await;
