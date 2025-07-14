@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::crypto::crypto::generate_uuid;
+use crate::crypto::signature::sign_packet;
 use crate::db::P2PDatabase;
 use crate::packets::{PeerInfo, Protocol, TransportData, TransportPacket};
 use anyhow::Result;
@@ -141,7 +142,7 @@ impl SignalClient {
                     peer_key: self.db.get_or_create_peer_id().unwrap(),
                     uuid: generate_uuid(),
                     nodes: vec![],
-            signature: None,
+                    signature: None,
                 };
 
                 self.send_packet(connect_packet).await?;
@@ -156,6 +157,9 @@ impl SignalClient {
     }
 
     pub async fn send_packet(&self, packet: TransportPacket) -> Result<(), String> {
+        let mut packet = packet;
+        let _ = sign_packet(&mut packet, &self.db.get_private_signing_key().unwrap());
+        
         let string_packet = serde_json::to_string(&packet).unwrap();
         let message_len = string_packet.len() as u32;
         let len_bytes = message_len.to_be_bytes();

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use serde::{Serialize, Deserialize};
-use bincode;
+use serde_json;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct User {
@@ -43,9 +43,23 @@ pub extern "C" fn register_user(ptr: i32, len: i32) -> i32 {
         }
     }
 
-    let user: User = unsafe {
+    let json_str = unsafe {
         let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);
-        bincode::deserialize(slice).unwrap()
+        std::str::from_utf8(slice).unwrap()
+    };
+
+    let user: User = match serde_json::from_str(json_str) {
+        Ok(u) => u,
+        Err(e) => {
+            let response = Response {
+                success: false,
+                message: format!("Failed to parse user data: {}", e),
+                data: None,
+            };
+            let serialized = serde_json::to_string(&response).unwrap();
+            let result_ptr = Box::into_raw(Box::new(serialized)) as i32;
+            return result_ptr;
+        }
     };
 
     let response = unsafe {
@@ -68,7 +82,7 @@ pub extern "C" fn register_user(ptr: i32, len: i32) -> i32 {
         }
     };
 
-    let serialized = bincode::serialize(&response).unwrap();
+    let serialized = serde_json::to_string(&response).unwrap();
     let result_ptr = Box::into_raw(Box::new(serialized)) as i32;
     result_ptr
 }
@@ -81,9 +95,23 @@ pub extern "C" fn transfer_tokens(ptr: i32, len: i32) -> i32 {
         }
     }
 
-    let transfer: TransferRequest = unsafe {
+    let json_str = unsafe {
         let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);
-        bincode::deserialize(slice).unwrap()
+        std::str::from_utf8(slice).unwrap()
+    };
+
+    let transfer: TransferRequest = match serde_json::from_str(json_str) {
+        Ok(t) => t,
+        Err(e) => {
+            let response = Response {
+                success: false,
+                message: format!("Failed to parse transfer data: {}", e),
+                data: None,
+            };
+            let serialized = serde_json::to_string(&response).unwrap();
+            let result_ptr = Box::into_raw(Box::new(serialized)) as i32;
+            return result_ptr;
+        }
     };
 
     let response = unsafe {
@@ -114,7 +142,7 @@ pub extern "C" fn transfer_tokens(ptr: i32, len: i32) -> i32 {
         }
     };
 
-    let serialized = bincode::serialize(&response).unwrap();
+    let serialized = serde_json::to_string(&response).unwrap();
     let result_ptr = Box::into_raw(Box::new(serialized)) as i32;
     result_ptr
 }
@@ -125,7 +153,7 @@ fn create_response(success: bool, message: &str, data: Option<User>) -> i32 {
         message: message.to_string(),
         data,
     };
-    let serialized = bincode::serialize(&response).unwrap();
+    let serialized = serde_json::to_string(&response).unwrap();
     let result_ptr = Box::into_raw(Box::new(serialized)) as i32;
     result_ptr
 }

@@ -320,8 +320,10 @@ impl Connection {
     }
 
     pub async fn send_packet(&self, mut packet: TransportPacket) -> Result<(), String> {
-        let signing_key = self.db.get_private_signing_key().map_err(|e| format!("Failed to get signing key: {}", e))?;
-        sign_packet(&mut packet, &signing_key)?;
+        if packet.signature.is_none() {
+            let signing_key = self.db.get_private_signing_key().map_err(|e| format!("Failed to get signing key: {}", e))?;
+            let _ = sign_packet(&mut packet, &signing_key);
+        }
 
         match Self::write_packet(&self.writer, &packet).await {
             Ok(_) => Ok(()),

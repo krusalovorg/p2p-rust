@@ -13,7 +13,8 @@ pub struct PeerInfo {
 pub struct PeerWaitConnection {
     pub connect_peer_id: String,
     pub public_ip: String,
-    pub public_port: u16
+    pub public_port: u16,
+    pub initiator_key: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

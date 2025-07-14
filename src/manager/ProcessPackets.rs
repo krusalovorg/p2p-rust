@@ -5,7 +5,7 @@ use crate::http::proxy::handle_http_proxy_response;
 use crate::logger::{debug, error, info, peer, storage, turn};
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
 use crate::packets::{
-    ContractExecutionRequest, ContractExecutionResponse, Message, Protocol, StorageToken,
+    Message, Protocol, StorageToken,
     TransportData, TransportPacket,
 };
 use colored::Colorize;
@@ -90,7 +90,7 @@ impl ConnectionManager {
                                     peer_key: self.db.get_or_create_peer_id().unwrap(),
                                     uuid: generate_uuid(),
                                     nodes: vec![],
-            signature: None,
+                                    signature: None,
                                 };
 
                                 let _ = self.auto_send_packet(packet_error).await;
@@ -321,6 +321,7 @@ impl ConnectionManager {
                             if let Err(e) = self
                                 .handle_contract_execution_request(
                                     request.clone(),
+                                    packet.clone(),
                                 )
                                 .await
                             {

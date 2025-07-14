@@ -27,7 +27,6 @@ impl P2PDatabase {
                 write_txn.open_table(tables::VALIDATOR_STORAGE_TABLE)?;
                 write_txn.open_table(tables::PEER_STATS_TABLE)?;
                 write_txn.open_table(tables::CONTRACT_METADATA_TABLE)?;
-                write_txn.open_table(tables::CONTRACT_CONSENSUS_TABLE)?;
             }
             write_txn.commit()?;
         }

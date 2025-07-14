@@ -2,7 +2,6 @@ use async_std::net::{IpAddr, SocketAddr};
 use async_std::sync::RwLock;
 use async_std::{fs, task};
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{str, thread};

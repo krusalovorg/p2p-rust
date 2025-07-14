@@ -3,7 +3,7 @@ use crate::connection::{Connection, Message};
 use crate::db::P2PDatabase;
 use crate::http::http_proxy::HttpProxy;
 use crate::manager::types::{ConnectionTurnStatus, ConnectionType};
-use crate::packets::{TransportData, TransportPacket};
+use crate::packets::{SearchPathNode, TransportData, TransportPacket};
 use crate::crypto::signature::sign_packet;
 use crate::peer::peer_api::PeerAPI;
 use crate::tunnel::Tunnel;
@@ -161,10 +161,17 @@ impl ConnectionManager {
     }
 
     pub async fn auto_send_packet(&self, mut packet: TransportPacket) -> Result<(), String> {
-        if packet.signature.is_none() {
+        if packet.signature.is_none() && packet.peer_key == self.db.get_or_create_peer_id().unwrap() {
             let signing_key = self.db.get_private_signing_key().map_err(|e| format!("Failed to get signing key: {}", e))?;
             sign_packet(&mut packet, &signing_key)?;
         }
+
+
+        packet.nodes.push(SearchPathNode {
+            uuid: self.db.get_or_create_peer_id().unwrap(),
+            public_ip: "0.0.0.0".to_string(),
+            public_port: -1,
+        });
 
         let mut sended_by_uuid = false;
 

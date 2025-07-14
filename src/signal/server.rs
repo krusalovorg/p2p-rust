@@ -1,11 +1,8 @@
 use crate::crypto::signature::sign_packet;
-use async_std::sync::Mutex;
 use dashmap::DashMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, RwLock};
 
@@ -78,6 +75,7 @@ impl SignalServer {
             config.signal_server_port.clone(),
             peers.clone(),
             connected_servers.clone(),
+            Arc::new(db.clone()),
         );
 
         let proxy_http_tx_clone = proxy_http_tx.clone();
@@ -417,19 +415,17 @@ impl SignalServer {
     async fn remove_peer(self: Arc<Self>, peer: &Arc<Peer>) -> bool {
         let peer_addr = peer.info.local_addr.clone();
         let peer_key = peer.info.peer_key.read().await.clone();
-        
+
         let mut peers = self.peers.write().await;
-        let peer_index = peers
-            .iter()
-            .position(|p| p.info.local_addr == peer_addr);
+        let peer_index = peers.iter().position(|p| p.info.local_addr == peer_addr);
 
         if let Some(index) = peer_index {
             peers.remove(index);
-            
+
             if let Some(key) = &peer_key {
                 self.pending_responses.remove(key);
             }
-            
+
             log(&format!(
                 "[SignalServer] Successfully removed peer {} with key {:?}",
                 peer_addr, peer_key
@@ -654,7 +650,7 @@ impl SignalServer {
                                 "[SignalServer] Forwarding storage reservation request to peer: {}",
                                 p.get_key().await.unwrap_or_default()
                             ));
-                            let packet = TransportPacket {
+                            let mut packet = TransportPacket {
                                 act: "reserve_storage".to_string(),
                                 to: Some(p.get_key().await.unwrap_or_default()),
                                 data: Some(TransportData::StorageReservationRequest(
@@ -670,6 +666,10 @@ impl SignalServer {
                                 }],
                                 signature: None,
                             };
+                            let _ = sign_packet(
+                                &mut packet,
+                                &self.db.get_private_signing_key().unwrap(),
+                            );
                             if let Err(e) = p.send(serde_json::to_string(&packet).unwrap()).await {
                                 log(&format!("[SignalServer] Failed to forward storage reservation request: {}", e));
                             }
@@ -725,7 +725,7 @@ impl SignalServer {
 
                     log("[SignalServer] Метаданные фрагментов успешно сохранены");
 
-                    let packet = TransportPacket {
+                    let mut packet = TransportPacket {
                         act: "sync_fragments".to_string(),
                         to: None,
                         data: Some(TransportData::FragmentMetadataSync(data.clone())),
@@ -735,7 +735,7 @@ impl SignalServer {
                         nodes: vec![],
                         signature: None,
                     };
-                    self.broadcast_to_servers(packet).await;
+                    self.broadcast_to_servers(&mut packet).await;
                 }
                 TransportData::FragmentSearchRequest(request) => {
                     log(&format!(
@@ -776,16 +776,21 @@ impl SignalServer {
                     }
                 }
                 TransportData::ContractExecutionRequest(request) => {
-                    if let Ok(fragment) = self.db.get_storage_fragments_by_hash(&request.contract_hash) {
+                    if let Ok(fragment) = self
+                        .db
+                        .get_storage_fragments_by_hash(&request.contract_hash)
+                    {
                         if let Some(fragment) = fragment {
                             let packet = TransportPacket {
                                 act: "request_contract".to_string(),
                                 to: Some(fragment.storage_peer_key.clone()),
-                                data: Some(TransportData::ContractExecutionRequest(request.clone())),
+                                data: Some(TransportData::ContractExecutionRequest(
+                                    request.clone(),
+                                )),
                                 protocol: Protocol::SIGNAL,
                                 peer_key: self.db.get_or_create_peer_id().unwrap(),
                                 uuid: generate_uuid(),
-                                nodes: vec![],
+                                nodes: message.nodes.clone(),
                                 signature: None,
                             };
                             self.auto_send_packet(packet).await;
@@ -858,7 +863,6 @@ impl SignalServer {
                                         "[SignalServer] Found peer with matching UUID: {}",
                                         data.connect_peer_id
                                     ));
-                                    log("peer finded");
                                     if open_tunnel.is_some() {
                                         log("[SignalServer] Peer have open tunnel. Start connect peers");
                                         let server_clone = Arc::clone(server);
@@ -877,11 +881,10 @@ impl SignalServer {
                                             peer_key: message.peer_key.to_string(),
                                             uuid: message.peer_key.to_string(),
                                             nodes: vec![],
-                                            signature: None,
+                                            signature: message.signature.clone(),
                                         };
                                         let packet_json = serde_json::to_string(&packet).unwrap();
                                         target_peer.send(packet_json).await;
-                                        log("sended packet json");
                                     }
                                     return;
                                 }
@@ -924,55 +927,13 @@ impl SignalServer {
                             self.response_tx.send(message.clone()).await;
                         }
                     } else {
-                        let peers_guard = server.peers.read().await;
-                        for item in peers_guard.iter() {
-                            if *item.info.peer_key.read().await == Some(to.clone()) {
-                                log(&format!(
-                                    "[SignalServer] Send turn packet: {} {:?}",
-                                    peer.info.local_addr, message
-                                ));
-
-                                let turn_packet = TransportPacket {
-                                    act: message.act.to_string(),
-                                    to: message.to.clone(),
-                                    data: message.data.clone(),
-                                    protocol: Protocol::TURN,
-                                    peer_key: message.peer_key.to_string(),
-                                    uuid: message.peer_key.to_string(),
-                                    nodes: vec![],
-                                    signature: None,
-                                };
-                                let turn_packet = serde_json::to_string(&turn_packet).unwrap();
-                                if let Err(e) = item.send(turn_packet).await {
-                                    log(&format!(
-                                        "[SignalServer] Failed to send turn packet to peer {}: {}",
-                                        item.info.local_addr, e
-                                    ));
-                                } else {
-                                    log(&format!(
-                                        "[SignalServer] Successfully send turn packet to peer {}",
-                                        item.info.local_addr
-                                    ));
-                                }
-                                break;
-                            }
-                        }
+                        self.auto_send_packet(message.clone()).await;
                     }
                 }
             }
             Protocol::SIGNAL => {
                 if message.act == "peer_list" {
                     server.clone().sync_peers(peer.clone()).await;
-                } else if message.protocol == Protocol::STUN && message.act == "wait_connection" {
-                    if let Some(TransportData::SyncPeerInfoData(data)) = &message.data {
-                        log("[SignalServer] Processing peers for wait_connection:");
-                        for peer in &data.peers {
-                            // println!("  - Public Address: {}", peer.public_addr);
-                            log(&format!("    UUID: {}", peer.uuid));
-                        }
-                    } else {
-                        log("[SignalServer] No peers found in the data for wait_connection.");
-                    }
                 } else if message.to.is_some() {
                     if message.to != Some((*self.my_public_key).clone()) {
                         log(&format!(
@@ -987,10 +948,80 @@ impl SignalServer {
     }
 
     pub async fn auto_send_packet(&self, mut message: TransportPacket) {
-        if let Err(e) = sign_packet(&mut message, &self.db.get_private_signing_key().unwrap()) {
-            log(&format!("[SignalServer] Failed to sign packet: {}", e));
-            return;
+        if message.signature.is_none() && message.peer_key == *self.my_public_key.clone() {
+            if let Err(e) = sign_packet(&mut message, &self.db.get_private_signing_key().unwrap()) {
+                log(&format!("[SignalServer] Failed to sign packet: {}", e));
+                return;
+            }
         }
+
+        // Если это ответный пакет и у нас есть nodes, используем их для маршрутизации
+        if !message.nodes.is_empty() {
+            // Проверяем, есть ли получатель в списке nodes
+            if let Some(target_peer_id) = &message.to {
+                let target_in_nodes = message
+                    .nodes
+                    .iter()
+                    .any(|node| node.uuid == *target_peer_id);
+                if !target_in_nodes {
+                    log(&format!(
+                        "[SignalServer] Target peer {} not found in nodes list, using default routing",
+                        target_peer_id
+                    ));
+                } else {
+                    // Берем последний узел из списка (предыдущий хоп)
+                    if let Some(next_node) = message.nodes.last() {
+                        let my_id = self.db.get_or_create_peer_id().unwrap();
+
+                        // Если следующий узел - это мы, удаляем его из списка и продолжаем маршрутизацию
+                        if next_node.uuid == my_id {
+                            message.nodes.pop();
+
+                            // Если это был последний узел, значит мы достигли конечной точки
+                            if message.nodes.is_empty() {
+                                if let Some(target_peer_id) = &message.to {
+                                    for peer in self.peers.read().await.iter() {
+                                        if peer.info.peer_key.read().await.clone().unwrap()
+                                            == *target_peer_id
+                                        {
+                                            peer.send(serde_json::to_string(&message).unwrap())
+                                                .await;
+                                            return;
+                                        }
+                                    }
+                                }
+                                return;
+                            }
+                        } else {
+                            // Ищем следующего пира для пересылки
+                            for peer in self.peers.read().await.iter() {
+                                if let Some(peer_key) = peer.info.peer_key.read().await.clone() {
+                                    if peer_key == next_node.uuid {
+                                        peer.send(serde_json::to_string(&message).unwrap()).await;
+                                        return;
+                                    }
+                                }
+                            }
+
+                            // Если не нашли пира, пробуем через другие сигнал-серверы
+                            for server in self.connected_servers.read().await.iter() {
+                                if server.public_key == next_node.uuid {
+                                    server.send_packet(message.clone()).await;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Если это не ответный пакет или маршрутизация не удалась, добавляем себя в nodes
+        message.nodes.push(SearchPathNode {
+            uuid: self.db.get_or_create_peer_id().unwrap(),
+            public_ip: self.ip.clone(),
+            public_port: self.port,
+        });
 
         if message.to.is_some() {
             let target_peer_id = message.to.clone().unwrap();
@@ -1107,15 +1138,18 @@ impl SignalServer {
                         connect_peer_id: pub_id.clone(),
                         public_ip: open_tunnel.ip,
                         public_port: open_tunnel.port,
+                        initiator_key: about_peer.info.peer_key.read().await.clone().unwrap(),
                     })),
                     protocol: Protocol::STUN,
-                    peer_key: about_peer.info.peer_key.read().await.clone().unwrap(),
+                    peer_key: db.get_or_create_peer_id().unwrap(),
                     uuid: generate_uuid(),
                     nodes: vec![],
                     signature: None,
                 };
 
-                if let Err(e) = sign_packet(&mut wait_packet, &db.get_private_signing_key().unwrap()) {
+                if let Err(e) =
+                    sign_packet(&mut wait_packet, &db.get_private_signing_key().unwrap())
+                {
                     log(&format!("[SignalServer] Failed to sign packet: {}", e));
                     return;
                 }
@@ -1140,7 +1174,10 @@ impl SignalServer {
         }
     }
 
-    async fn broadcast_to_servers(&self, packet: TransportPacket) {
+    async fn broadcast_to_servers(&self, packet: &mut TransportPacket) {
+        if packet.signature.is_none() && packet.peer_key == *self.my_public_key.clone() {
+            let _ = sign_packet(packet, &self.db.get_private_signing_key().unwrap());
+        }
         let servers = self.connected_servers.read().await;
         for server in servers.iter() {
             if let Err(e) = server.send_packet(packet.clone()).await {
@@ -1169,7 +1206,9 @@ impl SignalServer {
                     signature: None,
                 };
 
-                if let Err(e) = sign_packet(&mut packet, &self.db.get_private_signing_key().unwrap()) {
+                if let Err(e) =
+                    sign_packet(&mut packet, &self.db.get_private_signing_key().unwrap())
+                {
                     log(&format!("[SignalServer] Failed to sign packet: {}", e));
                     return;
                 }

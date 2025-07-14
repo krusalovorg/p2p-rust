@@ -294,13 +294,14 @@ impl PeerAPI {
         let tunnel_ip = tunnel.public_ip.clone();
         let tunnel_port = tunnel.public_port.clone();
         self.manager.add_tunnel(peer_id.to_string(), tunnel).await;
-        let packet = TransportPacket {
+        let mut packet = TransportPacket {
             act: "wait_connection".to_string(),
             to: None,
             data: Some(TransportData::PeerWaitConnection(PeerWaitConnection {
                 connect_peer_id: peer_id,
                 public_port: tunnel_port,
                 public_ip: tunnel_ip,
+                initiator_key: self.db.get_or_create_peer_id().unwrap(),
             })),
             protocol: Protocol::STUN,
             peer_key: self.db.get_or_create_peer_id().unwrap(),

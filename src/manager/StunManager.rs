@@ -25,6 +25,7 @@ impl ConnectionManager {
             connect_peer_id: target_uuid.clone(),
             public_ip: tunnel.public_ip.clone(),
             public_port: tunnel.public_port,
+            initiator_key: my_key.clone(),
         };
 
         println!("[DEBUG] Created net_info: {:?}", net_info);
@@ -75,8 +76,8 @@ impl ConnectionManager {
             let port = data.public_port;
             println!("[DEBUG] Target IP: {}, Port: {}", ip, port);
 
-            let tunnel_opt = self.get_tunnel(packet.peer_key.clone()).await;
-            println!("[DEBUG] Got tunnel for peer_key {}: {:?}", packet.peer_key, tunnel_opt.is_some());
+            let tunnel_opt = self.get_tunnel(data.initiator_key.clone()).await;
+            println!("[DEBUG] Got tunnel for peer_key {}: {:?}", data.initiator_key, tunnel_opt.is_some());
 
             if let Some(tunnel_arc) = tunnel_opt {
                 println!("[DEBUG] Attempting connection to {}:{}", ip, port);
@@ -86,7 +87,7 @@ impl ConnectionManager {
                 match tunnel_guard.make_connection(&ip, port, 3).await {
                     Ok(()) => {
                         self.connections_turn.insert(
-                            packet.peer_key.clone(),
+                            data.initiator_key.clone(),
                             ConnectionTurnStatus {
                                 connected: true,
                                 stun_connection: true,
@@ -104,7 +105,7 @@ impl ConnectionManager {
                     }
                 }
             } else {
-                println!("[DEBUG] No tunnel found for peer_key: {}", packet.peer_key);
+                println!("[DEBUG] No tunnel found for peer_key: {}", data.initiator_key);
                 Err("[STUN] error get tunnel".to_string())
             }
         } else {

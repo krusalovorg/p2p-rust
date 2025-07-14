@@ -18,6 +18,7 @@ mod contract;
 mod http;
 mod logger;
 mod commands;
+// mod python;
 
 use crate::signal::SignalServer;
 use crate::db::P2PDatabase;

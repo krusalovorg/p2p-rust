@@ -43,7 +43,6 @@ impl SignalServersList {
     }
 
     pub fn add_server(&mut self, server: SignalServerInfo) -> Result<(), String> {
-        // Проверяем, нет ли уже такого сервера
         if !self.servers.iter().any(|s| s.public_key == server.public_key) {
             self.servers.push(server);
             self.save()?;

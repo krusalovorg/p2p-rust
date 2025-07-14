@@ -287,6 +287,7 @@ impl ConnectionManager {
     pub async fn handle_contract_execution_request(
         &self,
         request: ContractExecutionRequest,
+        packet: TransportPacket,
     ) -> Result<(), String> {
         // Получаем путь к контракту из базы данных
         let contract = self
@@ -318,8 +319,8 @@ impl ConnectionManager {
                 protocol: Protocol::SIGNAL,
                 peer_key: self.db.get_or_create_peer_id().unwrap(),
                 uuid: generate_uuid(),
-                nodes: vec![],
-            signature: None,
+                nodes: packet.nodes.clone(),
+                signature: None,
             };
 
             self.auto_send_packet(response)
