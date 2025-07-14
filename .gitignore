@@ -25,3 +25,9 @@ storage/
 storage-2/
 wallet/node_modules/
 wallet/dist/
+storage-signal/
+config.toml
+signal_servers.json
+deploy-docker.sh
+deploy.sh
+copy-to-server.bat
